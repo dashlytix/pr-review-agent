@@ -49,14 +49,67 @@ go build ./...
 LLM_API_KEY=sk-... go run ./eval/cmd/evalrun -provider claude -min-score 0.75 -verbose
 ```
 
-Also works against any OpenAI-compatible gateway (e.g. OpenRouter) via env overrides, so you're not limited to a raw OpenAI key:
+Also works against any API-compatible gateway via env overrides, so you're not limited to a raw provider key. Both providers accept a base-URL override (`ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL`) and a model override (`ANTHROPIC_MODEL` / `OPENAI_MODEL`):
 
 ```
-LLM_API_KEY=sk-or-... OPENAI_BASE_URL=https://openrouter.ai/api/v1/chat/completions OPENAI_MODEL=openai/gpt-4o-mini \
+LLM_API_KEY=sk-or-... OPENAI_BASE_URL=https://openrouter.ai/api/v1 OPENAI_MODEL=openai/gpt-4o-mini \
   go run ./eval/cmd/evalrun -provider openai -min-score 0.75 -verbose
 ```
 
-`eval/fixtures/` has 20 fixtures (5 per target language: Go, Rust, TypeScript, SQL), within §9's 20-30 target. A live run against `openai/gpt-4o-mini` via OpenRouter scored 20/20 on cause-match, severity, and anchor validity — a good sign, though still one model/run, not a trend line.
+The base URL may be a bare host, a `/v1` prefix, or the fully qualified endpoint — `provider.resolveEndpoint` appends the provider's canonical path only if it isn't already there, so gateway docs can be copy-pasted as written instead of 404-ing on a doubled `/v1`.
+
+### Against a keyless gateway (exe.dev)
+
+The same overrides point either provider at the exe.dev managed LLM gateway, where credentials are injected at the network edge and `LLM_API_KEY` is just a non-empty placeholder:
+
+```
+# Anthropic-shaped path
+LLM_API_KEY=implicit ANTHROPIC_BASE_URL=https://llm.int.exe.xyz ANTHROPIC_MODEL=claude-opus-5 \
+  go run ./eval/cmd/evalrun -provider claude
+
+# OpenAI-shaped path
+LLM_API_KEY=implicit OPENAI_BASE_URL=https://llm.int.exe.xyz OPENAI_MODEL=gpt-5.6-sol \
+  go run ./eval/cmd/evalrun -provider openai
+```
+
+`eval/fixtures/` has 20 fixtures (5 per target language: Go, Rust, TypeScript, SQL), within §9's 20-30 target. Live runs through that gateway: `claude-opus-5` 20/20 and `gpt-5.6-sol` 19/20 on cause-match, both 20/20 on severity and anchor validity. Encouraging, but still one run per model — not a trend line. `gpt-5.6-sol`'s single miss was `go-004-index-out-of-range`.
+
+The first Claude run through that gateway also surfaced a real bug rather than a scoring result: 15/20 fixtures errored because `ClaudeProvider` read `content[0].text`, and reasoning-capable models put a `thinking` block there. The empty string failed to parse, then got sent as the repair call's user message, which the Messages API rejects with a 400 — so a decode bug surfaced as a confusing "malformed after repair" error. `claudeResponse.Text()` now concatenates every `text` block and skips the rest, and a no-text response fails immediately instead of triggering a repair call it knows will 400.
+
+## Slack notifications
+
+Optional, opt-in via the `slack-webhook-url` input (a Slack incoming webhook URL) — if
+unset, none of this fires and the rest of the action behaves exactly as documented above.
+`internal/notify` posts a single-line message to that webhook, no retry, for:
+
+- **AI review posted** — after `investigate()` posts a fresh (not-already-posted) PR
+  comment, on the existing `workflow_run`/`schedule` triggers.
+- **PR opened / closed / merged** — on a new `GITHUB_EVENT_NAME=pull_request` trigger. A
+  merged PR is reported as "merged to prod" when its base branch matches the `prod-branch`
+  input (default `main`); otherwise it's reported as a plain merge.
+
+A consuming workflow needs a second trigger alongside the existing `workflow_run`/
+`schedule` ones to get PR-lifecycle notifications:
+
+```yaml
+on:
+  pull_request:
+    types: [opened, closed]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dimension/ai-ci-agent@v1
+        with:
+          github-token: ${{ github.token }}
+          slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          prod-branch: main
+```
+
+Note `llm-provider`/`llm-api-key` aren't needed for this trigger — a `pull_request` run
+never invokes the LLM provider, so they're only required on the `workflow_run`/`schedule`
+paths.
 
 ## Open items carried over from §11
 

@@ -7,11 +7,27 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"strings"
 
 	"github.com/dimension/ai-ci-agent/internal/assess"
 )
 
+// envOr reads an environment variable, falling back to def when unset or
+// empty. Provider defaults (model, base URL) are overridable this way so
+// the same binary can talk to a managed gateway without new inputs.
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
 const defaultClaudeAPIURL = "https://api.anthropic.com/v1/messages"
+
+// claudeAPIPath is the canonical Anthropic Messages path appended to any
+// ANTHROPIC_BASE_URL override.
+const claudeAPIPath = "/v1/messages"
 
 // ClaudeProvider talks to the Anthropic Messages API. It is the default
 // provider (§4.1: llm-provider defaults to "claude"). BaseURL is
@@ -27,7 +43,7 @@ type ClaudeProvider struct {
 func NewClaudeProvider(apiKey string, httpClient *http.Client) *ClaudeProvider {
 	return &ClaudeProvider{
 		APIKey:  apiKey,
-		Model:   "claude-sonnet-5",
+		Model:   envOr("ANTHROPIC_MODEL", "claude-sonnet-5"),
 		BaseURL: defaultClaudeAPIURL,
 		HTTP:    httpClient,
 	}
@@ -53,6 +69,24 @@ type claudeResponse struct {
 	Error *struct {
 		Message string `json:"message"`
 	} `json:"error"`
+}
+
+// Text joins every text block in the response, skipping non-text blocks.
+//
+// Reasoning-capable models (and any model with extended thinking enabled)
+// prepend a "thinking" block, so content[0].Text is empty even on a
+// perfectly good answer; the API also permits a long answer to arrive
+// split across several text blocks. Concatenating just the text blocks
+// handles both without caring which model is behind the endpoint.
+func (r claudeResponse) Text() string {
+	var b strings.Builder
+	for _, c := range r.Content {
+		if c.Type != "" && c.Type != "text" {
+			continue
+		}
+		b.WriteString(c.Text)
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // Assess sends the gathered CI-failure context to Claude, parses the
@@ -133,5 +167,14 @@ func (p *ClaudeProvider) complete(ctx context.Context, system, user string, maxT
 	if len(parsed.Content) == 0 {
 		return "", fmt.Errorf("empty response content")
 	}
-	return parsed.Content[0].Text, nil
+	text := parsed.Text()
+	if text == "" {
+		// Reasoning models can return only non-text blocks (e.g. a
+		// "thinking" block with an empty body when the turn was cut
+		// short). Report that rather than handing "" to the parser and,
+		// worse, to the repair call — the Messages API rejects an empty
+		// user message with a 400, masking the real cause.
+		return "", fmt.Errorf("response contained no text blocks")
+	}
+	return text, nil
 }

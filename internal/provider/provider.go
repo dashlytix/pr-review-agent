@@ -31,22 +31,25 @@ type Provider interface {
 }
 
 // Get selects a Provider by name, per the llm-provider action input.
+//
+// Both providers honour <PROVIDER>_BASE_URL / <PROVIDER>_MODEL overrides so
+// either can be pointed at an API-compatible gateway (OpenRouter, or the
+// keyless exe.dev LLM gateway) without adding a third provider name to
+// plumb through the llm-provider input. resolveEndpoint accepts a bare
+// host, a "/v1" prefix, or a fully qualified path for the override.
 func Get(name, apiKey string) (Provider, error) {
 	client := &http.Client{Timeout: 90 * time.Second}
 	switch name {
 	case "", "claude":
-		return NewClaudeProvider(apiKey, client), nil
+		p := NewClaudeProvider(apiKey, client)
+		if base := os.Getenv("ANTHROPIC_BASE_URL"); base != "" {
+			p.BaseURL = resolveEndpoint(base, claudeAPIPath)
+		}
+		return p, nil
 	case "openai":
 		p := NewOpenAIProvider(apiKey, client)
-		// OPENAI_BASE_URL/OPENAI_MODEL let this same provider talk to any
-		// OpenAI-compatible gateway (e.g. OpenRouter) instead of OpenAI
-		// itself, without adding a third provider name to plumb through
-		// the llm-provider input.
 		if base := os.Getenv("OPENAI_BASE_URL"); base != "" {
-			p.BaseURL = base
-		}
-		if model := os.Getenv("OPENAI_MODEL"); model != "" {
-			p.Model = model
+			p.BaseURL = resolveEndpoint(base, openAIAPIPath)
 		}
 		return p, nil
 	default:
