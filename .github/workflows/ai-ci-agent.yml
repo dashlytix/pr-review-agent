@@ -28,9 +28,6 @@ jobs:
       - uses: ./
         with:
           llm-provider: claude
-          # The exe.dev gateway injects credentials at the network edge,
-          # so no API key secret exists to pass -- but the input is
-          # required and must be non-empty, hence the placeholder.
-          llm-api-key: implicit
+          llm-api-key: ${{ secrets.LLM_API_KEY }}
           llm-base-url: https://llm.int.exe.xyz
           llm-model: claude-opus-5
