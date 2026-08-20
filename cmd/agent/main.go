@@ -65,6 +65,7 @@ type pullRequestEvent struct {
 	PullRequest struct {
 		Number  int    `json:"number"`
 		Title   string `json:"title"`
+		Body    string `json:"body"`
 		HTMLURL string `json:"html_url"`
 		User    struct {
 			Login string `json:"login"`
@@ -72,7 +73,10 @@ type pullRequestEvent struct {
 		Base struct {
 			Ref string `json:"ref"`
 		} `json:"base"`
-		Merged bool `json:"merged"`
+		Merged             bool `json:"merged"`
+		RequestedReviewers []struct {
+			Login string `json:"login"`
+		} `json:"requested_reviewers"`
 	} `json:"pull_request"`
 }
 
@@ -172,14 +176,27 @@ func run() error {
 func handlePullRequestEvent(ctx context.Context, event *pullRequestEvent, slackWebhookURL, prodBranch string) error {
 	pr := event.PullRequest
 
+	reviewers := make([]string, 0, len(pr.RequestedReviewers))
+	for _, r := range pr.RequestedReviewers {
+		reviewers = append(reviewers, r.Login)
+	}
+	info := notify.PullRequest{
+		Number:    pr.Number,
+		Title:     pr.Title,
+		HTMLURL:   pr.HTMLURL,
+		Author:    pr.User.Login,
+		Body:      pr.Body,
+		Reviewers: reviewers,
+	}
+
 	var text string
 	switch {
 	case event.Action == "opened":
-		text = notify.RenderOpened(pr.Title, pr.HTMLURL, pr.User.Login)
+		text = notify.RenderOpened(info)
 	case event.Action == "closed" && !pr.Merged:
-		text = notify.RenderClosed(pr.Title, pr.HTMLURL, pr.User.Login)
+		text = notify.RenderClosed(info)
 	case event.Action == "closed" && pr.Merged:
-		text = notify.RenderMerged(pr.Title, pr.HTMLURL, pr.User.Login, pr.Base.Ref, prodBranch)
+		text = notify.RenderMerged(info, pr.Base.Ref, prodBranch)
 	default:
 		log.Printf("pull_request action %q: nothing to notify", event.Action)
 		return nil
