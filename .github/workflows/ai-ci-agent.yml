@@ -28,6 +28,9 @@ jobs:
       - uses: ./
         with:
           llm-provider: claude
+          # Calls Anthropic's API directly -- the exe.dev gateway
+          # (llm.int.exe.xyz) returns 402 "LLM credits exhausted" for
+          # this account, so llm-base-url is left unset to fall back to
+          # https://api.anthropic.com.
           llm-api-key: ${{ secrets.LLM_API_KEY }}
-          llm-base-url: https://llm.int.exe.xyz
           llm-model: claude-opus-5
