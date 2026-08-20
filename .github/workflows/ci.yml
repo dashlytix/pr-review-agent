@@ -1,0 +1,16 @@
+# The workflow the agent investigates. It must be a separate workflow from
+# the agent itself: workflow_run fires on *another* workflow completing, so
+# an agent step inside this file would never see this file's failure.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - run: go build ./...
+      - run: go test ./...
