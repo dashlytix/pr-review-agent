@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -144,5 +145,37 @@ func TestPostJSON_SendsBodyAndDecodesResponse(t *testing.T) {
 	}
 	if out["id"] != "123" {
 		t.Errorf("decoded response = %v, want {id: 123}", out)
+	}
+}
+
+// The Actions runner sets GITHUB_API_URL on every job; honouring it is
+// what makes the same binary work on GitHub Enterprise instead of
+// hardcoding the public API host.
+func TestNew_HonoursGitHubAPIURL(t *testing.T) {
+	t.Setenv("GITHUB_API_URL", "https://ghe.example/api/v3")
+
+	c := New("token", "acme", "billing")
+	if want := "https://ghe.example/api/v3"; c.BaseURL != want {
+		t.Errorf("BaseURL = %q, want %q", c.BaseURL, want)
+	}
+}
+
+func TestNew_TrimsTrailingSlashFromGitHubAPIURL(t *testing.T) {
+	t.Setenv("GITHUB_API_URL", "https://ghe.example/api/v3/")
+
+	c := New("token", "acme", "billing")
+	// Paths passed to do() already start with "/", so a trailing slash
+	// on the base would produce a doubled separator.
+	if want := "https://ghe.example/api/v3"; c.BaseURL != want {
+		t.Errorf("BaseURL = %q, want %q", c.BaseURL, want)
+	}
+}
+
+func TestNew_WithoutGitHubAPIURLUsesPublicAPI(t *testing.T) {
+	os.Unsetenv("GITHUB_API_URL")
+
+	c := New("token", "acme", "billing")
+	if c.BaseURL != defaultBaseURL {
+		t.Errorf("BaseURL = %q, want the public API default", c.BaseURL)
 	}
 }

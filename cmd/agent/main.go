@@ -94,6 +94,12 @@ func run() error {
 	token := firstNonEmpty(os.Getenv("INPUT_GITHUB-TOKEN"), os.Getenv("GITHUB_TOKEN"))
 	providerName := envOr("INPUT_LLM-PROVIDER", "claude")
 	apiKey := os.Getenv("INPUT_LLM-API-KEY")
+	// Inputs win over the environment: a workflow that spells the gateway
+	// out in action.yml shouldn't be silently overridden by an ambient
+	// ANTHROPIC_BASE_URL on the runner. Falling back to ConfigFromEnv
+	// keeps the eval harness and local shell runs working unchanged.
+	llmBaseURL := os.Getenv("INPUT_LLM-BASE-URL")
+	llmModel := os.Getenv("INPUT_LLM-MODEL")
 	repoFull := os.Getenv("GITHUB_REPOSITORY")
 	eventName := os.Getenv("GITHUB_EVENT_NAME")
 	eventPath := os.Getenv("GITHUB_EVENT_PATH")
@@ -124,7 +130,14 @@ func run() error {
 	if apiKey == "" {
 		return fmt.Errorf("missing llm-api-key input")
 	}
-	llmProvider, err := provider.Get(providerName, apiKey)
+	llmCfg := provider.ConfigFromEnv(providerName, apiKey)
+	if llmBaseURL != "" {
+		llmCfg.BaseURL = llmBaseURL
+	}
+	if llmModel != "" {
+		llmCfg.Model = llmModel
+	}
+	llmProvider, err := provider.New(llmCfg)
 	if err != nil {
 		return err // unsupported provider name — fail fast, per §7
 	}

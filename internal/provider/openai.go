@@ -14,8 +14,11 @@ import (
 const defaultOpenAIAPIURL = "https://api.openai.com/v1/chat/completions"
 
 // openAIAPIPath is the canonical chat-completions path appended to any
-// OPENAI_BASE_URL override.
+// base-URL override.
 const openAIAPIPath = "/v1/chat/completions"
+
+// defaultOpenAIModel is used unless Config.Model overrides it.
+const defaultOpenAIModel = "gpt-4o-mini"
 
 // OpenAIProvider talks to any OpenAI-compatible chat completions API —
 // not just OpenAI itself. BaseURL is overridable so the same code path
@@ -31,7 +34,7 @@ type OpenAIProvider struct {
 func NewOpenAIProvider(apiKey string, httpClient *http.Client) *OpenAIProvider {
 	return &OpenAIProvider{
 		APIKey:  apiKey,
-		Model:   envOr("OPENAI_MODEL", "gpt-4o-mini"),
+		Model:   defaultOpenAIModel,
 		BaseURL: defaultOpenAIAPIURL,
 		HTTP:    httpClient,
 	}

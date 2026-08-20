@@ -30,29 +30,91 @@ type Provider interface {
 	Assess(ctx context.Context, req AssessmentRequest) ([]Assessment, error)
 }
 
-// Get selects a Provider by name, per the llm-provider action input.
-//
-// Both providers honour <PROVIDER>_BASE_URL / <PROVIDER>_MODEL overrides so
-// either can be pointed at an API-compatible gateway (OpenRouter, or the
-// keyless exe.dev LLM gateway) without adding a third provider name to
-// plumb through the llm-provider input. resolveEndpoint accepts a bare
-// host, a "/v1" prefix, or a fully qualified path for the override.
-func Get(name, apiKey string) (Provider, error) {
+// envOr reads an environment variable, falling back to def when unset or
+// empty.
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+// Config is the resolved provider configuration for one run. It exists
+// so the base URL and model can arrive as explicit action inputs
+// (llm-base-url / llm-model) rather than only as ambient environment
+// variables: the Action's inputs are its documented contract, and a
+// gateway endpoint is configuration a workflow author should be able to
+// set in the same place as the provider name.
+type Config struct {
+	// Name is the llm-provider input: "" or "claude", or "openai".
+	Name string
+	// APIKey is the llm-api-key input. Gateways that inject credentials
+	// at the network edge still need a non-empty placeholder.
+	APIKey string
+	// BaseURL optionally redirects the provider at an API-compatible
+	// gateway. It may be a bare host, a "/v1" prefix, or a fully
+	// qualified endpoint — see resolveEndpoint.
+	BaseURL string
+	// Model optionally overrides the provider's default model.
+	Model string
+}
+
+// New builds a Provider from an explicit Config, with no environment
+// access of its own — callers resolve inputs first (see ConfigFromEnv),
+// which keeps configuration precedence in one visible place instead of
+// spread across constructors.
+func New(cfg Config) (Provider, error) {
 	client := &http.Client{Timeout: 90 * time.Second}
-	switch name {
+	switch cfg.Name {
 	case "", "claude":
-		p := NewClaudeProvider(apiKey, client)
-		if base := os.Getenv("ANTHROPIC_BASE_URL"); base != "" {
-			p.BaseURL = resolveEndpoint(base, claudeAPIPath)
+		p := NewClaudeProvider(cfg.APIKey, client)
+		if cfg.BaseURL != "" {
+			p.BaseURL = resolveEndpoint(cfg.BaseURL, claudeAPIPath)
+		}
+		if cfg.Model != "" {
+			p.Model = cfg.Model
 		}
 		return p, nil
 	case "openai":
-		p := NewOpenAIProvider(apiKey, client)
-		if base := os.Getenv("OPENAI_BASE_URL"); base != "" {
-			p.BaseURL = resolveEndpoint(base, openAIAPIPath)
+		p := NewOpenAIProvider(cfg.APIKey, client)
+		if cfg.BaseURL != "" {
+			p.BaseURL = resolveEndpoint(cfg.BaseURL, openAIAPIPath)
+		}
+		if cfg.Model != "" {
+			p.Model = cfg.Model
 		}
 		return p, nil
 	default:
-		return nil, fmt.Errorf("provider: unsupported llm-provider %q", name)
+		return nil, fmt.Errorf("provider: unsupported llm-provider %q", cfg.Name)
 	}
+}
+
+// ConfigFromEnv resolves the base URL and model for a provider from the
+// environment, so the eval harness and any plain-shell invocation keep
+// working without action inputs.
+//
+// Precedence, highest first: the provider-specific variable
+// (ANTHROPIC_BASE_URL / OPENAI_BASE_URL), then the provider-neutral
+// LLM_BASE_URL / LLM_MODEL. The neutral pair means a single pair of
+// variables can point either provider at the same gateway — useful when
+// one endpoint serves both API shapes.
+func ConfigFromEnv(name, apiKey string) Config {
+	cfg := Config{Name: name, APIKey: apiKey}
+	switch name {
+	case "", "claude":
+		cfg.BaseURL = envOr("ANTHROPIC_BASE_URL", os.Getenv("LLM_BASE_URL"))
+		cfg.Model = envOr("ANTHROPIC_MODEL", os.Getenv("LLM_MODEL"))
+	case "openai":
+		cfg.BaseURL = envOr("OPENAI_BASE_URL", os.Getenv("LLM_BASE_URL"))
+		cfg.Model = envOr("OPENAI_MODEL", os.Getenv("LLM_MODEL"))
+	}
+	return cfg
+}
+
+// Get selects a Provider by name, taking base URL and model from the
+// environment. It's the convenience path for callers with no explicit
+// configuration to pass (the eval harness); the Action itself uses New
+// with inputs resolved from action.yml.
+func Get(name, apiKey string) (Provider, error) {
+	return New(ConfigFromEnv(name, apiKey))
 }

@@ -64,3 +64,79 @@ func TestGet_ClaudeWithoutEnvOverridesUsesDefaults(t *testing.T) {
 		t.Errorf("Model = %q, want the built-in default", cp.Model)
 	}
 }
+
+func TestNew_AppliesExplicitConfig(t *testing.T) {
+	// Config must win outright — no environment consulted by New, so an
+	// ambient variable on a CI runner can't quietly redirect a workflow
+	// that spelled the gateway out in its inputs.
+	t.Setenv("ANTHROPIC_BASE_URL", "https://ambient.example")
+	t.Setenv("ANTHROPIC_MODEL", "ambient-model")
+
+	p, err := New(Config{Name: "claude", APIKey: "k", BaseURL: "https://gw.example", Model: "claude-opus-5"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	cp := p.(*ClaudeProvider)
+	if want := "https://gw.example/v1/messages"; cp.BaseURL != want {
+		t.Errorf("BaseURL = %q, want %q", cp.BaseURL, want)
+	}
+	if cp.Model != "claude-opus-5" {
+		t.Errorf("Model = %q, want the Config value", cp.Model)
+	}
+}
+
+func TestNew_EmptyConfigUsesProviderDefaults(t *testing.T) {
+	p, err := New(Config{Name: "openai", APIKey: "k"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	op := p.(*OpenAIProvider)
+	if op.BaseURL != defaultOpenAIAPIURL {
+		t.Errorf("BaseURL = %q, want the OpenAI default", op.BaseURL)
+	}
+	if op.Model != defaultOpenAIModel {
+		t.Errorf("Model = %q, want the built-in default", op.Model)
+	}
+}
+
+func TestNew_UnsupportedProviderErrors(t *testing.T) {
+	if _, err := New(Config{Name: "bogus"}); err == nil {
+		t.Fatal("expected an error for an unsupported provider name")
+	}
+}
+
+// The provider-neutral LLM_BASE_URL/LLM_MODEL pair lets one gateway that
+// serves both API shapes be configured once, whichever provider is used.
+func TestConfigFromEnv_NeutralVarsApplyToEitherProvider(t *testing.T) {
+	t.Setenv("LLM_BASE_URL", "https://llm.int.exe.xyz")
+	t.Setenv("LLM_MODEL", "shared-model")
+	os.Unsetenv("ANTHROPIC_BASE_URL")
+	os.Unsetenv("ANTHROPIC_MODEL")
+	os.Unsetenv("OPENAI_BASE_URL")
+	os.Unsetenv("OPENAI_MODEL")
+
+	for _, name := range []string{"claude", "openai"} {
+		cfg := ConfigFromEnv(name, "k")
+		if cfg.BaseURL != "https://llm.int.exe.xyz" {
+			t.Errorf("%s: BaseURL = %q, want the LLM_BASE_URL value", name, cfg.BaseURL)
+		}
+		if cfg.Model != "shared-model" {
+			t.Errorf("%s: Model = %q, want the LLM_MODEL value", name, cfg.Model)
+		}
+	}
+}
+
+func TestConfigFromEnv_ProviderSpecificVarsBeatNeutralOnes(t *testing.T) {
+	t.Setenv("LLM_BASE_URL", "https://neutral.example")
+	t.Setenv("LLM_MODEL", "neutral-model")
+	t.Setenv("ANTHROPIC_BASE_URL", "https://anthropic.example")
+	t.Setenv("ANTHROPIC_MODEL", "claude-opus-5")
+
+	cfg := ConfigFromEnv("claude", "k")
+	if cfg.BaseURL != "https://anthropic.example" {
+		t.Errorf("BaseURL = %q, want the provider-specific value", cfg.BaseURL)
+	}
+	if cfg.Model != "claude-opus-5" {
+		t.Errorf("Model = %q, want the provider-specific value", cfg.Model)
+	}
+}

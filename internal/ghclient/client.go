@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -35,10 +37,21 @@ type Client struct {
 	RetryBaseDelay time.Duration
 }
 
+// New builds a Client for one repository.
+//
+// The API host honours GITHUB_API_URL, which the Actions runner sets on
+// every job. Reading it means the same binary works on GitHub Enterprise
+// (where the host is not api.github.com) instead of hardcoding the public
+// API, and lets an end-to-end test point the whole agent at a stub
+// server without reaching the network.
 func New(token, owner, repo string) *Client {
+	base := defaultBaseURL
+	if v := strings.TrimRight(strings.TrimSpace(os.Getenv("GITHUB_API_URL")), "/"); v != "" {
+		base = v
+	}
 	return &Client{
 		HTTP:           &http.Client{Timeout: 30 * time.Second},
-		BaseURL:        defaultBaseURL,
+		BaseURL:        base,
 		Token:          token,
 		Owner:          owner,
 		Repo:           repo,

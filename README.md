@@ -8,7 +8,7 @@ Implementation of `ADR-001` / the accompanying Tech Spec (`AI_CI_Agent_ADR_TechS
 
 | Path | Spec section | What's here |
 |---|---|---|
-| `action.yml` | §4.1 | Action definition — `llm-provider` (default `claude`), `llm-api-key`, plus a `github-token` input the spec's snippet didn't spell out but the Action needs to read context and post comments |
+| `action.yml` | §4.1 | Action definition — `llm-provider` (default `claude`), `llm-api-key`, `llm-base-url`/`llm-model` for pointing a provider at an API-compatible gateway, plus a `github-token` input the spec's snippet didn't spell out but the Action needs to read context and post comments |
 | `Dockerfile` | §2 | Multi-stage build, stdlib-only Go binary on a distroless base |
 | `cmd/agent/main.go` | §5, §7 | Orchestration: gather → assess → post, plus the schedule-triggered reconciliation sweep (§7) |
 | `internal/gather` | §2.1, §3 | GitHub API calls for the log tail, PR diff, touched files; language-aware failure-line extraction (Go/Rust/TS/SQL, §1) |
@@ -34,6 +34,27 @@ The spec's §4.2 code block shows `AssessmentRequest`/`Assessment`/`Provider` al
 - **§6.3 stale-head handling** — the PR's current head is re-checked right before posting; if it moved, the comment is posted body-only with both SHAs called out.
 - **§7 failure modes** — provider timeout → fallback comment linking raw logs; GitHub rate limiting → retried with backoff, then a minimal comment; malformed JSON → one bounded repair call (tools/system prompt only, no fresh context), then a minimal comment; missing provider config → fails fast instead of silently degrading.
 - **§7 reconciliation backstop** — `GITHUB_EVENT_NAME=schedule` triggers `reconcile()`, which sweeps recent failed runs for any missing a marker comment (dropped-webhook case).
+
+## Pointing a provider at a gateway
+
+`llm-base-url` and `llm-model` let either provider talk to an API-compatible endpoint instead of the vendor's own API — OpenRouter, a self-hosted proxy, or a managed gateway that injects credentials at the network edge. `llm-provider` still selects the *wire format* (`claude` → Anthropic Messages, `openai` → chat completions); the base URL only changes where that format is sent.
+
+```yaml
+- uses: ./
+  with:
+    llm-provider: claude
+    llm-api-key: ${{ secrets.LLM_API_KEY }}
+    llm-base-url: https://my-gateway.internal
+    llm-model: claude-opus-5
+```
+
+The base URL may be a bare host, a `/v1` prefix, or a fully qualified endpoint — `provider.resolveEndpoint` appends the provider's canonical path only if it isn't already there, so gateway docs can be pasted as written instead of 404-ing on a doubled `/v1`.
+
+Configuration precedence, highest first: action inputs (`llm-base-url`/`llm-model`) → provider-specific env vars (`ANTHROPIC_BASE_URL`/`OPENAI_BASE_URL`, and the `_MODEL` equivalents) → provider-neutral `LLM_BASE_URL`/`LLM_MODEL` → the provider's built-in default. Inputs deliberately win over the environment: a workflow that names its gateway explicitly shouldn't be silently redirected by an ambient variable on the runner. The neutral pair exists for gateways that serve both API shapes at one host, so switching `llm-provider` needs no other change.
+
+`provider.New` takes an explicit `Config` and reads no environment itself; `provider.ConfigFromEnv` does the env resolution. Keeping those separate is what makes the precedence above testable in one place rather than scattered across constructors.
+
+The GitHub API host follows `GITHUB_API_URL`, which the Actions runner sets on every job — so the same image works against GitHub Enterprise, and an end-to-end run can be pointed at a stub server.
 
 ## Building
 
@@ -117,4 +138,5 @@ These are the spec's own open questions, unresolved here too:
 
 - Comment surface is implemented as a PR comment per the §1.1 assumption; job-summary/check-run-annotation would only touch `internal/post` and the render calls in `cmd/agent/main.go`.
 - Pilot repo, target eval score, eval-dataset ownership/cadence, and per-provider cost ceiling are still unset — they're policy decisions, not code.
-- Provider selection here is a fixed `llm-provider` input, not auto-detected from which API key is present.
+- Provider selection here is a fixed `llm-provider` input, not auto-detected from which API key is present. Note this selects the wire format, not the vendor: with `llm-base-url` set, `llm-provider: openai` reaches any chat-completions-compatible endpoint.
+- End-to-end verification is manual, not a checked-in test: the agent binary was run against a local GitHub API stub (via `GITHUB_API_URL`) with a live LLM behind `llm-base-url`, and both providers produced a correct nil-guard-removal diagnosis. Worth turning into a fixture-driven integration test with a recorded provider response.

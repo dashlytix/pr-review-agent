@@ -7,27 +7,19 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 
 	"github.com/dimension/ai-ci-agent/internal/assess"
 )
 
-// envOr reads an environment variable, falling back to def when unset or
-// empty. Provider defaults (model, base URL) are overridable this way so
-// the same binary can talk to a managed gateway without new inputs.
-func envOr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
-}
-
 const defaultClaudeAPIURL = "https://api.anthropic.com/v1/messages"
 
 // claudeAPIPath is the canonical Anthropic Messages path appended to any
-// ANTHROPIC_BASE_URL override.
+// base-URL override.
 const claudeAPIPath = "/v1/messages"
+
+// defaultClaudeModel is used unless Config.Model overrides it.
+const defaultClaudeModel = "claude-sonnet-5"
 
 // ClaudeProvider talks to the Anthropic Messages API. It is the default
 // provider (§4.1: llm-provider defaults to "claude"). BaseURL is
@@ -43,7 +35,7 @@ type ClaudeProvider struct {
 func NewClaudeProvider(apiKey string, httpClient *http.Client) *ClaudeProvider {
 	return &ClaudeProvider{
 		APIKey:  apiKey,
-		Model:   envOr("ANTHROPIC_MODEL", "claude-sonnet-5"),
+		Model:   defaultClaudeModel,
 		BaseURL: defaultClaudeAPIURL,
 		HTTP:    httpClient,
 	}

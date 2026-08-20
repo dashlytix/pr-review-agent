@@ -6,6 +6,10 @@ inputs:
     default: 'claude'
   llm-api-key:
     required: true
+  llm-base-url:
+    description: 'Override the provider API endpoint to use an API-compatible gateway (e.g. OpenRouter, or a self-hosted proxy). Accepts a bare host, a /v1 prefix, or a fully qualified path. If unset, the provider''s own API is used.'
+  llm-model:
+    description: 'Override the model the selected provider requests. If unset, the provider default is used (claude-sonnet-5 / gpt-4o-mini).'
   github-token:
     description: 'Token used to read run context and post the PR comment'
     default: '${{ github.token }}'
