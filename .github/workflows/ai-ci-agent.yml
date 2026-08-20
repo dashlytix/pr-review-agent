@@ -1,5 +1,8 @@
 # Runs the agent after CI fails, per ADR-001 §1: the trigger is a CI
-# failure, not a PR being opened.
+# failure, not a PR being opened. The pull_request trigger below is a
+# second, independent purpose -- Slack notifications for opened/closed/
+# merged -- which the agent's own pull_request event path (main.go's
+# handlePullRequestEvent) handles without ever calling the LLM.
 name: AI CI Agent
 
 on:
@@ -7,6 +10,8 @@ on:
     # Must match the `name:` of ci.yml, not its filename.
     workflows: ["CI"]
     types: [completed]
+  pull_request:
+    types: [opened, closed]
 
 # The repo-wide default is read-only; the agent has to write a PR comment.
 # Granting this here, in the workflow, rather than repo-wide keeps the
@@ -20,8 +25,10 @@ permissions:
 
 jobs:
   investigate:
-    # Only act on failure; a passing run has nothing to diagnose.
-    if: github.event.workflow_run.conclusion == 'failure'
+    # Only act on a CI failure; a passing run has nothing to diagnose,
+    # and this condition is false (not an error) on the pull_request
+    # trigger too, since github.event.workflow_run doesn't exist there.
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'failure'
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
@@ -34,3 +41,20 @@ jobs:
           # https://api.anthropic.com.
           llm-api-key: ${{ secrets.LLM_API_KEY }}
           llm-model: claude-opus-5
+          slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  notify:
+    # Opened/closed/merged Slack pings -- independent of CI outcome.
+    if: github.event_name == 'pull_request'
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./
+        with:
+          llm-provider: claude
+          # Required by action.yml even though the pull_request path
+          # (handlePullRequestEvent) never calls the LLM -- it only
+          # sends a Slack notification.
+          llm-api-key: ${{ secrets.LLM_API_KEY }}
+          slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          prod-branch: main
