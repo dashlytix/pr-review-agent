@@ -1,0 +1,11 @@
+{
+  "id": "sql-004-incompatible-fk-types",
+  "language": "sql",
+  "log_tail": "Applying migration 0033_add_service_bay_fk.sql\nERROR:  foreign key constraint \"fk_work_orders_bay\" cannot be implemented\nDETAIL:  Key columns \"bay_id\" and \"id\" are of incompatible types: text and integer.\nmigration failed: 0033_add_service_bay_fk.sql\n",
+  "diff": "diff --git a/migrations/0033_add_service_bay_fk.sql b/migrations/0033_add_service_bay_fk.sql\nnew file mode 100644\nindex 0000000..2929292\n--- /dev/null\n+++ b/migrations/0033_add_service_bay_fk.sql\n@@ -0,0 +1,2 @@\n+ALTER TABLE work_orders ADD COLUMN bay_id text;\n+ALTER TABLE work_orders ADD CONSTRAINT fk_work_orders_bay FOREIGN KEY (bay_id) REFERENCES service_bays(id);\n",
+  "files": {
+    "migrations/0033_add_service_bay_fk.sql": "@@ -0,0 +1,2 @@\n+ALTER TABLE work_orders ADD COLUMN bay_id text;\n+ALTER TABLE work_orders ADD CONSTRAINT fk_work_orders_bay FOREIGN KEY (bay_id) REFERENCES service_bays(id);\n"
+  },
+  "expected_cause_keywords": ["bay_id", "incompatible types", "integer", "foreign key"],
+  "min_severity": "P1"
+}

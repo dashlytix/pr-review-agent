@@ -1,0 +1,11 @@
+{
+  "id": "sql-002-syntax-error-missing-comma",
+  "language": "sql",
+  "log_tail": "Applying migration 0031_add_customer_fields.sql\nERROR:  syntax error at or near \"ADD\"\nLINE 3:   ADD COLUMN phone text;\n          ^\nmigration failed: 0031_add_customer_fields.sql\n",
+  "diff": "diff --git a/migrations/0031_add_customer_fields.sql b/migrations/0031_add_customer_fields.sql\nnew file mode 100644\nindex 0000000..2727272\n--- /dev/null\n+++ b/migrations/0031_add_customer_fields.sql\n@@ -0,0 +1,3 @@\n+ALTER TABLE customers\n+  ADD COLUMN notes text\n+  ADD COLUMN phone text;\n",
+  "files": {
+    "migrations/0031_add_customer_fields.sql": "@@ -0,0 +1,3 @@\n+ALTER TABLE customers\n+  ADD COLUMN notes text\n+  ADD COLUMN phone text;\n"
+  },
+  "expected_cause_keywords": ["comma", "ADD COLUMN", "syntax error", "notes"],
+  "min_severity": "P1"
+}

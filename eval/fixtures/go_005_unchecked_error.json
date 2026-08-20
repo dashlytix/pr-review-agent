@@ -1,0 +1,11 @@
+{
+  "id": "go-005-unchecked-error",
+  "language": "go",
+  "log_tail": "=== job: test ===\n--- FAIL: TestLoadConfig (0.00s)\npanic: runtime error: invalid memory address or nil pointer dereference\n[signal SIGSEGV: segmentation violation code=0x1 addr=0x0 pc=0x4a1203]\n\ngoroutine 1 [running]:\nconfig.Load(...)\n\t/src/config/config.go:22\nconfig.TestLoadConfig(0xc0000a0000)\n\t/src/config/config_test.go:14 +0x2c\nFAIL\tconfig\t0.008s\n",
+  "diff": "diff --git a/config/config.go b/config/config.go\nindex 7070707..8080808 100644\n--- a/config/config.go\n+++ b/config/config.go\n@@ -17,9 +17,7 @@ func Load(path string) *Config {\n-\tf, err := os.Open(path)\n-\tif err != nil {\n-\t\treturn nil\n-\t}\n+\tf, _ := os.Open(path)\n \tdefer f.Close()\n \tdec := json.NewDecoder(f)\n \tvar c Config\n",
+  "files": {
+    "config/config.go": "@@ -17,9 +17,7 @@ func Load(path string) *Config {\n-\tf, err := os.Open(path)\n-\tif err != nil {\n-\t\treturn nil\n-\t}\n+\tf, _ := os.Open(path)\n \tdefer f.Close()\n \tdec := json.NewDecoder(f)\n \tvar c Config\n"
+  },
+  "expected_cause_keywords": ["os.Open", "error", "ignored", "nil"],
+  "min_severity": "P1"
+}

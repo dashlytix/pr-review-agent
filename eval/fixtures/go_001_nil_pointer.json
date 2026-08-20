@@ -1,0 +1,11 @@
+{
+  "id": "go-001-nil-pointer",
+  "language": "go",
+  "log_tail": "=== job: test ===\n--- FAIL: TestGetOwner (0.00s)\npanic: runtime error: invalid memory address or nil pointer dereference [recovered]\n\tpanic: runtime error: invalid memory address or nil pointer dereference\n[signal SIGSEGV: segmentation violation code=0x1 addr=0x0 pc=0x47b2c1]\n\ngoroutine 12 [running]:\nvehicles.(*Garage).Owner(...)\n\t/src/vehicles/garage.go:42\nvehicles.TestGetOwner(0xc0000a4000)\n\t/src/vehicles/garage_test.go:18 +0x5c\nFAIL\tvehicles\t0.014s\n",
+  "diff": "diff --git a/vehicles/garage.go b/vehicles/garage.go\nindex 1111111..2222222 100644\n--- a/vehicles/garage.go\n+++ b/vehicles/garage.go\n@@ -38,7 +38,7 @@ func NewGarage(owner *Person) *Garage {\n }\n \n func (g *Garage) Owner() string {\n-\tif g.owner == nil {\n+\tif g == nil {\n \t\treturn \"\"\n \t}\n \treturn g.owner.Name\n",
+  "files": {
+    "vehicles/garage.go": "@@ -38,7 +38,7 @@ func NewGarage(owner *Person) *Garage {\n }\n \n func (g *Garage) Owner() string {\n-\tif g.owner == nil {\n+\tif g == nil {\n \t\treturn \"\"\n \t}\n \treturn g.owner.Name\n"
+  },
+  "expected_cause_keywords": ["nil", "owner", "g.owner"],
+  "min_severity": "P1"
+}

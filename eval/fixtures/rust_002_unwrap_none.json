@@ -1,0 +1,11 @@
+{
+  "id": "rust-002-unwrap-none",
+  "language": "rust",
+  "log_tail": "running 1 test\nthread 'quotes::tests::applies_loyalty_discount' panicked at src/quotes.rs:41:38:\ncalled `Option::unwrap()` on a `None` value\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\ntest quotes::tests::applies_loyalty_discount ... FAILED\n\nfailures:\n    quotes::tests::applies_loyalty_discount\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored\n",
+  "diff": "diff --git a/src/quotes.rs b/src/quotes.rs\nindex 9090909..1212121 100644\n--- a/src/quotes.rs\n+++ b/src/quotes.rs\n@@ -38,7 +38,7 @@ impl Quote {\n     }\n \n     pub fn loyalty_discount(&self, customer: &Customer) -> f64 {\n-        customer.loyalty_tier().map(|t| t.discount()).unwrap_or(0.0)\n+        customer.loyalty_tier().map(|t| t.discount()).unwrap()\n     }\n }\n",
+  "files": {
+    "src/quotes.rs": "@@ -38,7 +38,7 @@ impl Quote {\n     }\n \n     pub fn loyalty_discount(&self, customer: &Customer) -> f64 {\n-        customer.loyalty_tier().map(|t| t.discount()).unwrap_or(0.0)\n+        customer.loyalty_tier().map(|t| t.discount()).unwrap()\n     }\n }\n"
+  },
+  "expected_cause_keywords": ["unwrap", "None", "loyalty_tier", "unwrap_or"],
+  "min_severity": "P1"
+}

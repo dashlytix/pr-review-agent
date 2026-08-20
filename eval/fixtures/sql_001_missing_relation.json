@@ -1,0 +1,11 @@
+{
+  "id": "sql-001-missing-relation",
+  "language": "sql",
+  "log_tail": "=== job: migrate ===\nApplying migration 0027_add_work_order_notes.sql\nERROR:  relation \"work_orders\" does not exist\nLINE 2: ALTER TABLE work_orders ADD COLUMN notes text;\n                     ^\nmigration failed: 0027_add_work_order_notes.sql\n",
+  "diff": "diff --git a/migrations/0027_add_work_order_notes.sql b/migrations/0027_add_work_order_notes.sql\nnew file mode 100644\nindex 0000000..7777777\n--- /dev/null\n+++ b/migrations/0027_add_work_order_notes.sql\n@@ -0,0 +1,2 @@\n+ALTER TABLE work_orders ADD COLUMN notes text;\n+\n",
+  "files": {
+    "migrations/0027_add_work_order_notes.sql": "@@ -0,0 +1,2 @@\n+ALTER TABLE work_orders ADD COLUMN notes text;\n+\n"
+  },
+  "expected_cause_keywords": ["work_orders", "does not exist", "table name", "typo"],
+  "min_severity": "P1"
+}

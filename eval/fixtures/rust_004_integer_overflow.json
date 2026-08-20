@@ -1,0 +1,11 @@
+{
+  "id": "rust-004-integer-overflow",
+  "language": "rust",
+  "log_tail": "running 1 test\nthread 'inventory::tests::restock_amount' panicked at src/inventory.rs:55:16:\nattempt to subtract with overflow\ntest inventory::tests::restock_amount ... FAILED\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored\n",
+  "diff": "diff --git a/src/inventory.rs b/src/inventory.rs\nindex 1515151..1616161 100644\n--- a/src/inventory.rs\n+++ b/src/inventory.rs\n@@ -52,7 +52,7 @@ impl Inventory {\n     pub fn restock_amount(&self, target: u32) -> u32 {\n-        target.saturating_sub(self.current_stock)\n+        target - self.current_stock\n     }\n }\n",
+  "files": {
+    "src/inventory.rs": "@@ -52,7 +52,7 @@ impl Inventory {\n     pub fn restock_amount(&self, target: u32) -> u32 {\n-        target.saturating_sub(self.current_stock)\n+        target - self.current_stock\n     }\n }\n"
+  },
+  "expected_cause_keywords": ["overflow", "saturating_sub", "current_stock", "subtract"],
+  "min_severity": "P1"
+}

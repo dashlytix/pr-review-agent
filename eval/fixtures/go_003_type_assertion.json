@@ -1,0 +1,11 @@
+{
+  "id": "go-003-type-assertion",
+  "language": "go",
+  "log_tail": "=== job: test ===\n--- FAIL: TestHandleWebhook (0.00s)\npanic: interface conversion: interface {} is string, not int\n\ngoroutine 8 [running]:\nwebhooks.(*Handler).mileage(...)\n\t/src/webhooks/handler.go:31\nwebhooks.TestHandleWebhook(0xc0001a4000)\n\t/src/webhooks/handler_test.go:22 +0x8c\nFAIL\twebhooks\t0.009s\n",
+  "diff": "diff --git a/webhooks/handler.go b/webhooks/handler.go\nindex 3030303..4040404 100644\n--- a/webhooks/handler.go\n+++ b/webhooks/handler.go\n@@ -27,7 +27,6 @@ func (h *Handler) mileage(payload map[string]interface{}) int {\n \t// mileage is sent as a string by older webhook senders\n-\tv, ok := payload[\"mileage\"].(int)\n-\tif !ok {\n-\t\treturn 0\n-\t}\n-\treturn v\n+\treturn payload[\"mileage\"].(int)\n }\n",
+  "files": {
+    "webhooks/handler.go": "@@ -27,7 +27,6 @@ func (h *Handler) mileage(payload map[string]interface{}) int {\n \t// mileage is sent as a string by older webhook senders\n-\tv, ok := payload[\"mileage\"].(int)\n-\tif !ok {\n-\t\treturn 0\n-\t}\n-\treturn v\n+\treturn payload[\"mileage\"].(int)\n }\n"
+  },
+  "expected_cause_keywords": ["interface conversion", "type assertion", "mileage", "string"],
+  "min_severity": "P1"
+}

@@ -1,0 +1,11 @@
+{
+  "id": "sql-005-not-null-without-backfill",
+  "language": "sql",
+  "log_tail": "Applying migration 0034_require_customer_email.sql\nERROR:  column \"email\" of relation \"customers\" contains null values\nmigration failed: 0034_require_customer_email.sql\n",
+  "diff": "diff --git a/migrations/0034_require_customer_email.sql b/migrations/0034_require_customer_email.sql\nnew file mode 100644\nindex 0000000..3030303\n--- /dev/null\n+++ b/migrations/0034_require_customer_email.sql\n@@ -0,0 +1,1 @@\n+ALTER TABLE customers ALTER COLUMN email SET NOT NULL;\n",
+  "files": {
+    "migrations/0034_require_customer_email.sql": "@@ -0,0 +1,1 @@\n+ALTER TABLE customers ALTER COLUMN email SET NOT NULL;\n"
+  },
+  "expected_cause_keywords": ["null values", "email", "backfill", "NOT NULL"],
+  "min_severity": "P1"
+}

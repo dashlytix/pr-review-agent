@@ -1,0 +1,11 @@
+{
+  "id": "go-002-nil-map-write",
+  "language": "go",
+  "log_tail": "=== job: test ===\n--- FAIL: TestSetPrice (0.00s)\npanic: assignment to entry in nil map\n\ngoroutine 6 [running]:\npricing.(*Catalog).SetPrice(...)\n\t/src/pricing/catalog.go:19\npricing.TestSetPrice(0xc0000a4000)\n\t/src/pricing/catalog_test.go:12 +0x45\nFAIL\tpricing\t0.012s\n",
+  "diff": "diff --git a/pricing/catalog.go b/pricing/catalog.go\nindex 1010101..2020202 100644\n--- a/pricing/catalog.go\n+++ b/pricing/catalog.go\n@@ -10,8 +10,7 @@ type Catalog struct {\n }\n \n func NewCatalog() *Catalog {\n-\treturn &Catalog{\n-\t\tprices: make(map[string]float64),\n-\t}\n+\treturn &Catalog{}\n }\n",
+  "files": {
+    "pricing/catalog.go": "@@ -10,8 +10,7 @@ type Catalog struct {\n }\n \n func NewCatalog() *Catalog {\n-\treturn &Catalog{\n-\t\tprices: make(map[string]float64),\n-\t}\n+\treturn &Catalog{}\n }\n"
+  },
+  "expected_cause_keywords": ["nil map", "make(map", "prices"],
+  "min_severity": "P1"
+}

@@ -1,0 +1,11 @@
+{
+  "id": "sql-003-duplicate-column",
+  "language": "sql",
+  "log_tail": "Applying migration 0032_add_vin_column.sql\nERROR:  column \"vin\" of relation \"vehicles\" already exists\nmigration failed: 0032_add_vin_column.sql\n",
+  "diff": "diff --git a/migrations/0032_add_vin_column.sql b/migrations/0032_add_vin_column.sql\nnew file mode 100644\nindex 0000000..2828282\n--- /dev/null\n+++ b/migrations/0032_add_vin_column.sql\n@@ -0,0 +1,1 @@\n+ALTER TABLE vehicles ADD COLUMN vin varchar(17);\n",
+  "files": {
+    "migrations/0032_add_vin_column.sql": "@@ -0,0 +1,1 @@\n+ALTER TABLE vehicles ADD COLUMN vin varchar(17);\n"
+  },
+  "expected_cause_keywords": ["vin", "already exists", "vehicles", "duplicate"],
+  "min_severity": "P1"
+}

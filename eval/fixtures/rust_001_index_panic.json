@@ -1,0 +1,11 @@
+{
+  "id": "rust-001-index-panic",
+  "language": "rust",
+  "log_tail": "=== job: test ===\nrunning 1 test\nthread 'inventory::tests::last_part' panicked at src/inventory.rs:27:20:\nindex out of bounds: the len is 0 but the index is 0\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\ntest inventory::tests::last_part ... FAILED\n\nfailures:\n    inventory::tests::last_part\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored\n",
+  "diff": "diff --git a/src/inventory.rs b/src/inventory.rs\nindex 3333333..4444444 100644\n--- a/src/inventory.rs\n+++ b/src/inventory.rs\n@@ -24,7 +24,7 @@ impl Inventory {\n     }\n \n     pub fn last_part(&self) -> &Part {\n-        self.parts.last().expect(\"inventory should not be empty\")\n+        &self.parts[self.parts.len() - 1]\n     }\n }\n",
+  "files": {
+    "src/inventory.rs": "@@ -24,7 +24,7 @@ impl Inventory {\n     }\n \n     pub fn last_part(&self) -> &Part {\n-        self.parts.last().expect(\"inventory should not be empty\")\n+        &self.parts[self.parts.len() - 1]\n     }\n }\n"
+  },
+  "expected_cause_keywords": ["index out of bounds", "empty", "parts.len"],
+  "min_severity": "P1"
+}

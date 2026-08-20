@@ -1,0 +1,11 @@
+{
+  "id": "go-004-index-out-of-range",
+  "language": "go",
+  "log_tail": "=== job: test ===\n--- FAIL: TestLastThreeServices (0.00s)\npanic: runtime error: index out of range [2] with length 2\n\ngoroutine 4 [running]:\nhistory.RecentServices(...)\n\t/src/history/services.go:15\nhistory.TestLastThreeServices(0xc0000a2000)\n\t/src/history/services_test.go:9 +0x33\nFAIL\thistory\t0.011s\n",
+  "diff": "diff --git a/history/services.go b/history/services.go\nindex 5050505..6060606 100644\n--- a/history/services.go\n+++ b/history/services.go\n@@ -11,7 +11,7 @@ func RecentServices(all []Service) []Service {\n \tvar last3 []Service\n-\tfor i := 0; i < 3 && i < len(all); i++ {\n+\tfor i := 0; i < 3; i++ {\n \t\tlast3 = append(last3, all[i])\n \t}\n \treturn last3\n",
+  "files": {
+    "history/services.go": "@@ -11,7 +11,7 @@ func RecentServices(all []Service) []Service {\n \tvar last3 []Service\n-\tfor i := 0; i < 3 && i < len(all); i++ {\n+\tfor i := 0; i < 3; i++ {\n \t\tlast3 = append(last3, all[i])\n \t}\n \treturn last3\n"
+  },
+  "expected_cause_keywords": ["index out of range", "len(all)", "bounds check", "removed"],
+  "min_severity": "P1"
+}

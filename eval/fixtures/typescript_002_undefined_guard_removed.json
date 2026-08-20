@@ -1,0 +1,11 @@
+{
+  "id": "typescript-002-undefined-guard-removed",
+  "language": "typescript",
+  "log_tail": "$ jest\nFAIL src/customers/lookup.test.ts\n  ✕ finds a customer by phone number (4 ms)\n\n  ● finds a customer by phone number\n\n    TypeError: Cannot read properties of undefined (reading 'trim')\n\n      12 | export function normalizePhone(phone) {\n    > 13 |   return phone.trim().replace(/[^0-9]/g, '');\n      14 | }\n",
+  "diff": "diff --git a/src/customers/lookup.ts b/src/customers/lookup.ts\nindex 1919191..2020202 100644\n--- a/src/customers/lookup.ts\n+++ b/src/customers/lookup.ts\n@@ -9,7 +9,6 @@ export function normalizePhone(phone?: string): string {\n-  phone = phone || '';\n   return phone.trim().replace(/[^0-9]/g, '');\n }\n",
+  "files": {
+    "src/customers/lookup.ts": "@@ -9,7 +9,6 @@ export function normalizePhone(phone?: string): string {\n-  phone = phone || '';\n   return phone.trim().replace(/[^0-9]/g, '');\n }\n"
+  },
+  "expected_cause_keywords": ["normalizePhone", "undefined", "phone", "guard"],
+  "min_severity": "P1"
+}

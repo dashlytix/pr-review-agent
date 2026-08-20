@@ -1,0 +1,11 @@
+{
+  "id": "typescript-001-type-mismatch",
+  "language": "typescript",
+  "log_tail": "=== job: build ===\n$ tsc -p .\nsrc/quotes/pricing.ts(15,32): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.\nsrc/quotes/pricing.ts(15,32): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.\nFound 1 error.\n",
+  "diff": "diff --git a/src/quotes/pricing.ts b/src/quotes/pricing.ts\nindex 5555555..6666666 100644\n--- a/src/quotes/pricing.ts\n+++ b/src/quotes/pricing.ts\n@@ -12,7 +12,7 @@ export function applyDiscount(total: number, code: string): number {\n }\n \n export function finalPrice(total: number, code: string): number {\n-  return applyDiscount(total, discountPercent(code));\n+  return applyDiscount(total, code);\n }\n",
+  "files": {
+    "src/quotes/pricing.ts": "@@ -12,7 +12,7 @@ export function applyDiscount(total: number, code: string): number {\n }\n \n export function finalPrice(total: number, code: string): number {\n-  return applyDiscount(total, discountPercent(code));\n+  return applyDiscount(total, code);\n }\n"
+  },
+  "expected_cause_keywords": ["applyDiscount", "code", "discountPercent", "type"],
+  "min_severity": "P1"
+}

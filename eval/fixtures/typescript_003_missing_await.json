@@ -1,0 +1,11 @@
+{
+  "id": "typescript-003-missing-await",
+  "language": "typescript",
+  "log_tail": "$ jest\nFAIL src/orders/checkout.test.ts\n  ✕ creates an order total (3 ms)\n\n  ● creates an order total\n\n    expect(received).toBe(expected)\n\n    Expected: 129.99\n    Received: Promise {}\n\n      18 |   const total = calculateTotal(cart);\n    > 19 |   expect(total).toBe(129.99);\n",
+  "diff": "diff --git a/src/orders/checkout.ts b/src/orders/checkout.ts\nindex 2121212..2222222 100644\n--- a/src/orders/checkout.ts\n+++ b/src/orders/checkout.ts\n@@ -14,7 +14,7 @@ export async function checkout(cart: Cart) {\n-  const total = await calculateTotal(cart);\n+  const total = calculateTotal(cart);\n   return total;\n }\n",
+  "files": {
+    "src/orders/checkout.ts": "@@ -14,7 +14,7 @@ export async function checkout(cart: Cart) {\n-  const total = await calculateTotal(cart);\n+  const total = calculateTotal(cart);\n   return total;\n }\n"
+  },
+  "expected_cause_keywords": ["await", "calculateTotal", "Promise", "async"],
+  "min_severity": "P1"
+}

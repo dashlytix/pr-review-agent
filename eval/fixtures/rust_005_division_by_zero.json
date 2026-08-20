@@ -1,0 +1,11 @@
+{
+  "id": "rust-005-division-by-zero",
+  "language": "rust",
+  "log_tail": "running 1 test\nthread 'reports::tests::average_ticket_no_orders' panicked at src/reports.rs:6:5:\nattempt to divide by zero\ntest reports::tests::average_ticket_no_orders ... FAILED\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored\n",
+  "diff": "diff --git a/src/reports.rs b/src/reports.rs\nindex 1717171..1818181 100644\n--- a/src/reports.rs\n+++ b/src/reports.rs\n@@ -1,9 +1,6 @@\n pub fn average_ticket(total: u64, order_count: u64) -> u64 {\n-    if order_count == 0 {\n-        return 0;\n-    }\n     total / order_count\n }\n",
+  "files": {
+    "src/reports.rs": "@@ -1,9 +1,6 @@\n pub fn average_ticket(total: u64, order_count: u64) -> u64 {\n-    if order_count == 0 {\n-        return 0;\n-    }\n     total / order_count\n }\n"
+  },
+  "expected_cause_keywords": ["divide by zero", "order_count", "guard", "zero"],
+  "min_severity": "P1"
+}

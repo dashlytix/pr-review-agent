@@ -1,0 +1,11 @@
+{
+  "id": "typescript-005-renamed-field-mismatch",
+  "language": "typescript",
+  "log_tail": "$ jest\nFAIL src/invoices/summary.test.ts\n  ✕ sums invoice line items (2 ms)\n\n  ● sums invoice line items\n\n    TypeError: Cannot read properties of undefined (reading 'reduce')\n\n      7 | export function invoiceTotal(invoice: Invoice): number {\n    > 8 |   return invoice.lineItems.reduce((sum, li) => sum + li.amount, 0);\n",
+  "diff": "diff --git a/src/invoices/summary.ts b/src/invoices/summary.ts\nindex 2525252..2626262 100644\n--- a/src/invoices/summary.ts\n+++ b/src/invoices/summary.ts\n@@ -2,7 +2,7 @@ import type { LineItem } from './types';\n \n export interface Invoice {\n-  lineItems: LineItem[];\n+  items: LineItem[];\n }\n \n export function invoiceTotal(invoice: Invoice): number {\n",
+  "files": {
+    "src/invoices/summary.ts": "@@ -2,7 +2,7 @@ import type { LineItem } from './types';\n \n export interface Invoice {\n-  lineItems: LineItem[];\n+  items: LineItem[];\n }\n \n export function invoiceTotal(invoice: Invoice): number {\n"
+  },
+  "expected_cause_keywords": ["lineItems", "items", "reduce", "rename"],
+  "min_severity": "P1"
+}

@@ -1,0 +1,11 @@
+{
+  "id": "rust-003-type-mismatch",
+  "language": "rust",
+  "log_tail": "=== job: build ===\n$ cargo build\nerror[E0308]: mismatched types\n  --> src/billing.rs:19:24\n   |\n19 |     apply_tax(subtotal, region)\n   |               -------- ^^^^^^ expected `f64`, found `&str`\n   |               |\n   |               arguments to this function are incorrect\nerror: could not compile `motor-shop-core` (bin \"motor-shop-core\") due to previous error\n",
+  "diff": "diff --git a/src/billing.rs b/src/billing.rs\nindex 1313131..1414141 100644\n--- a/src/billing.rs\n+++ b/src/billing.rs\n@@ -16,7 +16,7 @@ pub fn total(subtotal: f64, region: &str) -> f64 {\n-    apply_tax(subtotal, region_rate(region))\n+    apply_tax(subtotal, region)\n }\n",
+  "files": {
+    "src/billing.rs": "@@ -16,7 +16,7 @@ pub fn total(subtotal: f64, region: &str) -> f64 {\n-    apply_tax(subtotal, region_rate(region))\n+    apply_tax(subtotal, region)\n }\n"
+  },
+  "expected_cause_keywords": ["mismatched types", "apply_tax", "region_rate", "f64"],
+  "min_severity": "P1"
+}

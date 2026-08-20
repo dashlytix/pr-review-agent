@@ -1,0 +1,11 @@
+{
+  "id": "typescript-004-unresolved-import",
+  "language": "typescript",
+  "log_tail": "$ vite build\nerror during build:\n[vite]: Rollup failed to resolve import \"./discountEngine\" from \"src/quotes/pricing.ts\".\nThis is most likely unintended because it can break your application at runtime.\nfile: /repo/src/quotes/pricing.ts\n",
+  "diff": "diff --git a/src/quotes/pricing.ts b/src/quotes/pricing.ts\nindex 2323232..2424242 100644\n--- a/src/quotes/pricing.ts\n+++ b/src/quotes/pricing.ts\n@@ -1,4 +1,4 @@\n-import { applyDiscount } from './discounts';\n+import { applyDiscount } from './discountEngine';\n \n export function finalPrice(total: number, code: string): number {\n   return applyDiscount(total, code);\n",
+  "files": {
+    "src/quotes/pricing.ts": "@@ -1,4 +1,4 @@\n-import { applyDiscount } from './discounts';\n+import { applyDiscount } from './discountEngine';\n \n export function finalPrice(total: number, code: string): number {\n   return applyDiscount(total, code);\n"
+  },
+  "expected_cause_keywords": ["discountEngine", "import", "resolve", "discounts"],
+  "min_severity": "P1"
+}
