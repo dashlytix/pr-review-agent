@@ -27,13 +27,21 @@ import (
 	"github.com/dimension/ai-ci-agent/internal/assess"
 	"github.com/dimension/ai-ci-agent/internal/gather"
 	"github.com/dimension/ai-ci-agent/internal/ghclient"
+	"github.com/dimension/ai-ci-agent/internal/notify"
 	"github.com/dimension/ai-ci-agent/internal/post"
 	"github.com/dimension/ai-ci-agent/internal/provider"
 )
 
-// pullRequestHead is only used to re-check the PR's current head before
-// posting (§6.3 "stale-head aware").
-type pullRequestHead struct {
+// pullRequestMeta is fetched once to both re-check the PR's current head
+// before posting (§6.3 "stale-head aware") and, if Slack notifications
+// are enabled, supply the title/author/URL for the "review posted"
+// notification — one API call serving both needs.
+type pullRequestMeta struct {
+	Title   string `json:"title"`
+	HTMLURL string `json:"html_url"`
+	User    struct {
+		Login string `json:"login"`
+	} `json:"user"`
 	Head struct {
 		SHA string `json:"sha"`
 	} `json:"head"`
@@ -47,6 +55,25 @@ type workflowRunEvent struct {
 			Number int `json:"number"`
 		} `json:"pull_requests"`
 	} `json:"workflow_run"`
+}
+
+// pullRequestEvent is the GITHUB_EVENT_PATH payload for
+// GITHUB_EVENT_NAME=pull_request, used to drive Slack notifications for
+// PR opened/closed/merged.
+type pullRequestEvent struct {
+	Action      string `json:"action"`
+	PullRequest struct {
+		Number  int    `json:"number"`
+		Title   string `json:"title"`
+		HTMLURL string `json:"html_url"`
+		User    struct {
+			Login string `json:"login"`
+		} `json:"user"`
+		Base struct {
+			Ref string `json:"ref"`
+		} `json:"base"`
+		Merged bool `json:"merged"`
+	} `json:"pull_request"`
 }
 
 // reconcileRunLimit bounds how many recent failed runs the schedule
@@ -70,20 +97,33 @@ func run() error {
 	repoFull := os.Getenv("GITHUB_REPOSITORY")
 	eventName := os.Getenv("GITHUB_EVENT_NAME")
 	eventPath := os.Getenv("GITHUB_EVENT_PATH")
+	slackWebhookURL := os.Getenv("INPUT_SLACK-WEBHOOK-URL")
+	prodBranch := envOr("INPUT_PROD-BRANCH", "main")
 
 	// §7: "Selected provider not configured / missing key — Action fails
 	// fast with a clear setup error rather than a silent fallback."
 	if token == "" {
 		return fmt.Errorf("missing github token (github-token input or GITHUB_TOKEN)")
 	}
-	if apiKey == "" {
-		return fmt.Errorf("missing llm-api-key input")
-	}
 	owner, repo, ok := strings.Cut(repoFull, "/")
 	if !ok {
 		return fmt.Errorf("GITHUB_REPOSITORY %q is not in owner/repo form", repoFull)
 	}
 
+	if eventName == "pull_request" {
+		event, err := loadPullRequestEvent(eventPath)
+		if err != nil {
+			return fmt.Errorf("read pull_request event: %w", err)
+		}
+		return handlePullRequestEvent(ctx, event, slackWebhookURL, prodBranch)
+	}
+
+	// The remaining paths (schedule, workflow_run) drive an LLM
+	// assessment, so they need a provider — pull_request notifications
+	// above don't and are handled before this fail-fast check.
+	if apiKey == "" {
+		return fmt.Errorf("missing llm-api-key input")
+	}
 	llmProvider, err := provider.Get(providerName, apiKey)
 	if err != nil {
 		return err // unsupported provider name — fail fast, per §7
@@ -92,7 +132,7 @@ func run() error {
 	client := ghclient.New(token, owner, repo)
 
 	if eventName == "schedule" {
-		return reconcile(ctx, client, llmProvider)
+		return reconcile(ctx, client, llmProvider, slackWebhookURL)
 	}
 
 	event, err := loadWorkflowRunEvent(eventPath)
@@ -109,14 +149,40 @@ func run() error {
 		prNumber = event.WorkflowRun.PullRequests[0].Number
 	}
 
-	return investigate(ctx, client, llmProvider, event.WorkflowRun.ID, prNumber)
+	return investigate(ctx, client, llmProvider, event.WorkflowRun.ID, prNumber, slackWebhookURL)
+}
+
+// handlePullRequestEvent sends a Slack notification for a PR
+// opened/closed/merged webhook event. Sending is the entire purpose of
+// this path (there's no PR comment fallback here), so a send failure is
+// returned as this run's error rather than merely logged.
+func handlePullRequestEvent(ctx context.Context, event *pullRequestEvent, slackWebhookURL, prodBranch string) error {
+	pr := event.PullRequest
+
+	var text string
+	switch {
+	case event.Action == "opened":
+		text = notify.RenderOpened(pr.Title, pr.HTMLURL, pr.User.Login)
+	case event.Action == "closed" && !pr.Merged:
+		text = notify.RenderClosed(pr.Title, pr.HTMLURL, pr.User.Login)
+	case event.Action == "closed" && pr.Merged:
+		text = notify.RenderMerged(pr.Title, pr.HTMLURL, pr.User.Login, pr.Base.Ref, prodBranch)
+	default:
+		log.Printf("pull_request action %q: nothing to notify", event.Action)
+		return nil
+	}
+
+	if err := notify.Send(ctx, slackWebhookURL, text); err != nil {
+		return fmt.Errorf("notify: %w", err)
+	}
+	return nil
 }
 
 // investigate runs the full gather → assess → post sequence (§5) for one
 // workflow run. Every failure mode past this point (§7) degrades to a
 // posted comment rather than a non-zero exit — only the config checks in
 // run() are treated as fatal.
-func investigate(ctx context.Context, client *ghclient.Client, llmProvider provider.Provider, runID int64, prNumber int) error {
+func investigate(ctx context.Context, client *ghclient.Client, llmProvider provider.Provider, runID int64, prNumber int, slackWebhookURL string) error {
 	result, gatherErr := gather.Gather(ctx, client, runID, prNumber)
 	if result == nil {
 		if gatherErr == nil {
@@ -137,15 +203,16 @@ func investigate(ctx context.Context, client *ghclient.Client, llmProvider provi
 		findings, assessErr = llmProvider.Assess(ctx, result.Request)
 	}
 
-	staleHeadSHA, headErr := currentHead(ctx, client, result.PRNumber)
-	if headErr != nil {
-		// Head-check is best-effort context for the comment, not a hard
-		// dependency — don't let it block posting the assessment itself.
-		log.Printf("warning: could not verify current PR head: %v", headErr)
-		staleHeadSHA = ""
-	}
-	if staleHeadSHA == result.HeadSHA {
-		staleHeadSHA = "" // not stale
+	// One fetch serves both the stale-head check and (below) the Slack
+	// "review posted" notification's title/author/URL.
+	meta, metaErr := fetchPRMeta(ctx, client, result.PRNumber)
+	staleHeadSHA := ""
+	if metaErr != nil {
+		// Best-effort context for the comment, not a hard dependency —
+		// don't let it block posting the assessment itself.
+		log.Printf("warning: could not verify current PR head: %v", metaErr)
+	} else if meta.Head.SHA != result.HeadSHA {
+		staleHeadSHA = meta.Head.SHA
 	}
 
 	body := renderBody(assessErr, findings, result, staleHeadSHA)
@@ -158,6 +225,15 @@ func investigate(ctx context.Context, client *ghclient.Client, llmProvider provi
 		log.Printf("run %d: assessment already posted: %s", runID, url)
 	} else {
 		log.Printf("run %d: posted assessment: %s", runID, url)
+		// Notification is secondary to the comment that just posted
+		// successfully, so a Slack failure here is logged, not fatal —
+		// and skipped (with a re-post never re-attempted) once already
+		// posted, so a reconcile pass never double-pings Slack.
+		if metaErr == nil {
+			if err := notify.Send(ctx, slackWebhookURL, notify.RenderAssessmentPosted(meta.Title, meta.HTMLURL, url)); err != nil {
+				log.Printf("warning: slack notification failed: %v", err)
+			}
+		}
 	}
 
 	writeOutput("comment-url", url)
@@ -167,7 +243,7 @@ func investigate(ctx context.Context, client *ghclient.Client, llmProvider provi
 
 // reconcile is the §7 backstop for a dropped webhook: sweep recent
 // failed runs and catch up any still missing a marker comment.
-func reconcile(ctx context.Context, client *ghclient.Client, llmProvider provider.Provider) error {
+func reconcile(ctx context.Context, client *ghclient.Client, llmProvider provider.Provider, slackWebhookURL string) error {
 	runs, err := gather.RecentFailedRuns(ctx, client, reconcileRunLimit)
 	if err != nil {
 		return fmt.Errorf("reconcile: list recent failed runs: %w", err)
@@ -192,7 +268,7 @@ func reconcile(ctx context.Context, client *ghclient.Client, llmProvider provide
 		}
 
 		log.Printf("reconcile: run %d has no marker comment yet, catching up", r.ID)
-		if err := investigate(ctx, client, llmProvider, r.ID, result.PRNumber); err != nil {
+		if err := investigate(ctx, client, llmProvider, r.ID, result.PRNumber, slackWebhookURL); err != nil {
 			log.Printf("reconcile: run %d: %v", r.ID, err)
 		}
 	}
@@ -225,12 +301,29 @@ func isRateLimited(err error) bool {
 	return errors.As(err, &rl)
 }
 
-func currentHead(ctx context.Context, client *ghclient.Client, prNumber int) (string, error) {
-	var pr pullRequestHead
+func fetchPRMeta(ctx context.Context, client *ghclient.Client, prNumber int) (*pullRequestMeta, error) {
+	var pr pullRequestMeta
 	if err := client.GetJSON(ctx, client.RepoPath("/pulls/%d", prNumber), &pr); err != nil {
-		return "", err
+		return nil, err
 	}
-	return pr.Head.SHA, nil
+	return &pr, nil
+}
+
+func loadPullRequestEvent(path string) (*pullRequestEvent, error) {
+	if path == "" {
+		return nil, fmt.Errorf("GITHUB_EVENT_PATH not set")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	var event pullRequestEvent
+	if err := json.NewDecoder(f).Decode(&event); err != nil {
+		return nil, err
+	}
+	return &event, nil
 }
 
 func loadWorkflowRunEvent(path string) (*workflowRunEvent, error) {
