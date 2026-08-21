@@ -2,7 +2,7 @@
 
 Implementation of `ADR-001` / the accompanying Tech Spec (`AI_CI_Agent_ADR_TechSpec.docx`): a stateless GitHub Action that investigates a CI failure and posts findings as a PR comment. No database, no separate service — every invocation re-derives its context from the GitHub API (§3).
 
-**Same trigger, expanded scope.** It still only fires on CI failure (no new `on: pull_request` trigger), but each run now returns an array of findings rather than a single one: exactly one mandatory `ci-failure` diagnosis, plus zero or more additional `correctness`/`security`/`style`/`performance` findings spotted in the same diff while investigating. This reuses the ADR's own framing — §Context already anticipated "a shared engine with two entry points — PR review and CI failure" — by folding PR-review-style findings into the CI-triggered run instead of adding a second trigger.
+**Two entry points, one finding schema.** The CI-failure trigger (`workflow_run`) returns an array of findings rather than a single one: exactly one mandatory `ci-failure` diagnosis, plus zero or more additional `correctness`/`security`/`style`/`performance` findings spotted in the same diff while investigating. A second `on: pull_request` (`opened`/`synchronize`) trigger runs a plain PR review independent of any CI outcome, returning zero or more findings from that same category set (minus `ci-failure`, which doesn't apply here). This is the "shared engine with two entry points — PR review and CI failure" §Context anticipated, implemented as two Provider methods (`Assess`, `Review`) over one finding schema rather than two parallel ones. See "Full PR review" below.
 
 ## Layout vs. the spec
 
@@ -10,11 +10,11 @@ Implementation of `ADR-001` / the accompanying Tech Spec (`AI_CI_Agent_ADR_TechS
 |---|---|---|
 | `action.yml` | §4.1 | Action definition — `llm-provider` (default `claude`), `llm-api-key`, `llm-base-url`/`llm-model` for pointing a provider at an API-compatible gateway, plus a `github-token` input the spec's snippet didn't spell out but the Action needs to read context and post comments |
 | `Dockerfile` | §2 | Multi-stage build, stdlib-only Go binary on a distroless base |
-| `cmd/agent/main.go` | §5, §7 | Orchestration: gather → assess → post, plus the schedule-triggered reconciliation sweep (§7) |
-| `internal/gather` | §2.1, §3 | GitHub API calls for the log tail, PR diff, touched files; language-aware failure-line extraction (Go/Rust/TS/SQL, §1) |
-| `internal/provider` | §4.2 | `Provider` interface (`Assess` returns `[]Assessment`), `ClaudeProvider`, `OpenAIProvider` |
-| `internal/assess` | §4.2, §6.1 | Prompt building, JSON array parsing + one bounded repair attempt, diff-anchor validation — all applied per-finding |
-| `internal/post` | §4.3, §4.4, §6.3 | Renders every finding into one comment (primary `ci-failure` finding first, any extras in an "Other findings" section), marker-based idempotency, stale-head handling |
+| `cmd/agent/main.go` | §5, §7 | Orchestration: gather → assess → post (`investigate`), the schedule-triggered reconciliation sweep (§7), and the plain-PR-review path (`reviewPR`) for the `pull_request` opened/synchronize trigger |
+| `internal/gather` | §2.1, §3 | GitHub API calls for the log tail, PR diff, touched files; language-aware failure-line extraction (Go/Rust/TS/SQL, §1); `GatherForReview` skips the log tail for the review path, where no CI run exists |
+| `internal/provider` | §4.2 | `Provider` interface (`Assess` and `Review` both return `[]Assessment`), `ClaudeProvider`, `OpenAIProvider` |
+| `internal/assess` | §4.2, §6.1 | Prompt building, JSON array parsing + one bounded repair attempt, diff-anchor validation — all applied per-finding; `Review*`-prefixed prompt/parse functions serve the PR-review path, where no category is mandatory |
+| `internal/post` | §4.3, §4.4, §6.3 | Renders every finding into one comment (primary `ci-failure` finding first, any extras in an "Other findings" section), marker-based idempotency, stale-head handling; `RenderReviewFindings`/`PostReview` are the review path's counterparts, keyed by a distinct `reviewMarker` so a review comment and a CI-failure comment on the same commit never collide |
 | `internal/ghclient` | — | Shared GitHub REST client with retry/backoff on rate limiting (not named as its own package in the spec, but needed by both `gather` and `post`) |
 | `eval/` | §9 | Evaluation harness — 20 fixtures across the four target languages and a scoring CLI (scores the mandatory `ci-failure` finding against each fixture's known answer) |
 
@@ -97,40 +97,56 @@ LLM_API_KEY=implicit OPENAI_BASE_URL=https://llm.int.exe.xyz OPENAI_MODEL=gpt-5.
 
 The first Claude run through that gateway also surfaced a real bug rather than a scoring result: 15/20 fixtures errored because `ClaudeProvider` read `content[0].text`, and reasoning-capable models put a `thinking` block there. The empty string failed to parse, then got sent as the repair call's user message, which the Messages API rejects with a 400 — so a decode bug surfaced as a confusing "malformed after repair" error. `claudeResponse.Text()` now concatenates every `text` block and skips the rest, and a no-text response fails immediately instead of triggering a repair call it knows will 400.
 
+## Full PR review
+
+A second `on: pull_request` trigger (`opened`/`synchronize`) runs a plain code review of
+the PR's diff, independent of whether CI has run or passed — `gather.GatherForReview`
+fetches just the diff and touched files (no CI run is involved, so no log tail),
+`Provider.Review` prompts with `assess.ReviewSystemPrompt` instead of `SystemPrompt` (no
+mandatory `ci-failure` finding; an empty array is the common, valid "no issues found"
+result), and `post.RenderReviewFindings`/`post.PostReview` post the result under a distinct
+`reviewMarker` — deliberately not the same marker `investigate()` uses, so a review comment
+and a CI-failure comment landing on the same commit SHA never shadow each other in the
+idempotency lookup.
+
 ## Slack notifications
 
 Optional, opt-in via the `slack-webhook-url` input (a Slack incoming webhook URL) — if
 unset, none of this fires and the rest of the action behaves exactly as documented above.
 `internal/notify` posts a single-line message to that webhook, no retry, for:
 
-- **AI review posted** — after `investigate()` posts a fresh (not-already-posted) PR
-  comment, on the existing `workflow_run`/`schedule` triggers.
-- **PR opened / closed / merged** — on a new `GITHUB_EVENT_NAME=pull_request` trigger. A
+- **AI review posted** — after `investigate()` or `reviewPR()` posts a fresh
+  (not-already-posted) PR comment, on the `workflow_run`/`schedule` triggers and the
+  `pull_request` review path alike.
+- **PR opened / closed / merged** — on the same `GITHUB_EVENT_NAME=pull_request` trigger. A
   merged PR is reported as "merged to prod" when its base branch matches the `prod-branch`
   input (default `main`); otherwise it's reported as a plain merge.
 
 A consuming workflow needs a second trigger alongside the existing `workflow_run`/
-`schedule` ones to get PR-lifecycle notifications:
+`schedule` ones to get both PR-lifecycle notifications and the full review above:
 
 ```yaml
 on:
   pull_request:
-    types: [opened, closed]
+    types: [opened, synchronize, closed]
 
 jobs:
-  notify:
+  pull-request:
     runs-on: ubuntu-latest
     steps:
       - uses: dimension/ai-ci-agent@v1
         with:
           github-token: ${{ github.token }}
+          llm-provider: claude
+          llm-api-key: ${{ secrets.LLM_API_KEY }}
           slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
           prod-branch: main
 ```
 
-Note `llm-provider`/`llm-api-key` aren't needed for this trigger — a `pull_request` run
-never invokes the LLM provider, so they're only required on the `workflow_run`/`schedule`
-paths.
+Unlike the old opened/closed-only Slack trigger, `llm-provider`/`llm-api-key` **are** needed
+here now: `opened`/`synchronize` reach the LLM provider for the full review, while `closed`
+still doesn't (only the Slack ping fires) — `main.go` dispatches on the webhook's `action`
+internally, so one job/container run covers whichever of the two a given action needs.
 
 ## Open items carried over from §11
 

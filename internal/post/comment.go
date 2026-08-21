@@ -30,8 +30,18 @@ func Exists(ctx context.Context, client *ghclient.Client, prNumber int, sha stri
 // returned as-is rather than duplicated — this covers both a workflow
 // re-run on the same commit and any accidental double-invocation.
 func Post(ctx context.Context, client *ghclient.Client, prNumber int, sha, body string) (postedURL string, alreadyPosted bool, err error) {
-	m := marker(sha)
+	return postWithMarker(ctx, client, prNumber, marker(sha), body)
+}
 
+// PostReview is Post's counterpart for the plain PR-review path (see
+// reviewMarker) — kept as a separate marker so a review comment and a
+// CI-failure comment on the same commit SHA never collide in the
+// idempotency lookup.
+func PostReview(ctx context.Context, client *ghclient.Client, prNumber int, sha, body string) (postedURL string, alreadyPosted bool, err error) {
+	return postWithMarker(ctx, client, prNumber, reviewMarker(sha), body)
+}
+
+func postWithMarker(ctx context.Context, client *ghclient.Client, prNumber int, m, body string) (postedURL string, alreadyPosted bool, err error) {
 	existing, err := findByMarker(ctx, client, prNumber, m)
 	if err != nil {
 		return "", false, fmt.Errorf("post: check existing comments: %w", err)

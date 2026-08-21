@@ -92,6 +92,55 @@ func renderFinding(a provider.Assessment, stale bool) string {
 	return b.String()
 }
 
+// RenderReviewFindings builds the PR comment body for the plain
+// PR-review path (pull_request opened/synchronize). Unlike
+// RenderAssessments there is no mandatory primary finding — an empty
+// slice is a valid, common outcome and renders as an explicit "no
+// issues found" rather than an empty comment. Uses reviewMarker, not
+// marker, so this comment's idempotency never collides with a
+// CI-failure comment on the same commit.
+func RenderReviewFindings(findings []provider.Assessment, sha string) string {
+	var b strings.Builder
+	b.WriteString("### 🤖 AI PR Review\n\n")
+
+	if len(findings) == 0 {
+		b.WriteString("No issues found in this diff.\n")
+	} else {
+		for i, f := range findings {
+			if i > 0 {
+				b.WriteString("\n---\n")
+			}
+			b.WriteString(renderFinding(f, false))
+		}
+	}
+
+	b.WriteString("\n")
+	b.WriteString(reviewMarker(sha))
+	return b.String()
+}
+
+// RenderReviewFallback is RenderFallback's counterpart for the review
+// path — there's no CI run/raw-logs link to point to here, so the
+// message just names the outage.
+func RenderReviewFallback(sha string) string {
+	var b strings.Builder
+	b.WriteString("### 🤖 AI PR Review\n\n")
+	b.WriteString("The LLM provider was unavailable or timed out, so no automated review could be generated for this PR.\n\n")
+	b.WriteString(reviewMarker(sha))
+	return b.String()
+}
+
+// RenderReviewMinimal is RenderMinimal's counterpart for the review path,
+// using reviewMarker so the comment is found by PostReview's idempotency
+// check rather than Post's.
+func RenderReviewMinimal(reason, sha string) string {
+	var b strings.Builder
+	b.WriteString("### 🤖 AI PR Review\n\n")
+	b.WriteString(fmt.Sprintf("Unable to produce a full review for this PR: %s\n\n", reason))
+	b.WriteString(reviewMarker(sha))
+	return b.String()
+}
+
 // RenderFallback covers §7's "LLM provider unavailable or times out":
 // post a fallback comment linking the raw logs and exit non-fatally.
 func RenderFallback(runHTMLURL, sha string) string {

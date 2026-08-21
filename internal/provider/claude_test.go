@@ -160,6 +160,66 @@ func TestClaudeProvider_Assess_JoinsMultipleTextBlocks(t *testing.T) {
 	}
 }
 
+const validReviewFindingJSON = `[{"file":"a.go","line":1,"category":"correctness","severity":"P2","comment":"off-by-one","suggested_fix":"use <=","confidence":"medium","anchored":true}]`
+
+func TestClaudeProvider_Review_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(claudeTextResponse(validReviewFindingJSON))
+	}))
+	defer server.Close()
+
+	p := newTestClaudeProvider(server)
+	findings, err := p.Review(context.Background(), assess.AssessmentRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 || findings[0].Category != "correctness" {
+		t.Errorf("got %+v", findings)
+	}
+}
+
+// An empty array is the common, valid "no issues found" result for the
+// review path — unlike Assess, it must not be treated as malformed.
+func TestClaudeProvider_Review_EmptyArrayIsValid(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(claudeTextResponse("[]"))
+	}))
+	defer server.Close()
+
+	p := newTestClaudeProvider(server)
+	findings, err := p.Review(context.Background(), assess.AssessmentRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("expected 0 findings, got %+v", findings)
+	}
+}
+
+func TestClaudeProvider_Review_RepairsMalformedFirstResponse(t *testing.T) {
+	var calls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			json.NewEncoder(w).Encode(claudeTextResponse("not json at all, sorry"))
+			return
+		}
+		json.NewEncoder(w).Encode(claudeTextResponse(validReviewFindingJSON))
+	}))
+	defer server.Close()
+
+	p := newTestClaudeProvider(server)
+	findings, err := p.Review(context.Background(), assess.AssessmentRequest{})
+	if err != nil {
+		t.Fatalf("expected the repair attempt to succeed, got error: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Errorf("got %+v", findings)
+	}
+	if calls != 2 {
+		t.Errorf("expected exactly 2 calls (initial + one repair), got %d", calls)
+	}
+}
+
 // A response carrying no usable text must surface as an error rather than
 // handing "" to the repair call, which the Messages API rejects with a
 // 400 ("user messages must have non-empty content").

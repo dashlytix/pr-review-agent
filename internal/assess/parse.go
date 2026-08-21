@@ -69,6 +69,41 @@ func ParseAssessments(raw string) ([]Assessment, error) {
 	return findings, nil
 }
 
+// ParseReviewAssessments is ParseAssessments' counterpart for the plain
+// PR-review path: no category is mandatory (an empty array is a valid,
+// common "no issues found" result), and "ci-failure" is rejected as a
+// category here since there's no CI failure being diagnosed.
+func ParseReviewAssessments(raw string) ([]Assessment, error) {
+	candidate := extractJSONArray(raw)
+	if candidate == "" {
+		return nil, fmt.Errorf("assess: no JSON array found in response")
+	}
+
+	var findings []Assessment
+	if err := json.Unmarshal([]byte(candidate), &findings); err != nil {
+		return nil, fmt.Errorf("assess: invalid JSON: %w", err)
+	}
+
+	for i := range findings {
+		a := &findings[i]
+
+		if a.Category == "ci-failure" || !ValidCategories[a.Category] {
+			return nil, fmt.Errorf("assess: invalid category %q", a.Category)
+		}
+		if !validSeverity[a.Severity] {
+			return nil, fmt.Errorf("assess: invalid severity %q", a.Severity)
+		}
+		if !validConfidence[a.Confidence] {
+			return nil, fmt.Errorf("assess: invalid confidence %q", a.Confidence)
+		}
+		if a.File == "" || a.Line <= 0 {
+			a.Anchored = false
+		}
+	}
+
+	return findings, nil
+}
+
 // extractJSONArray pulls the first plausible JSON array out of raw text:
 // a fenced block if present, otherwise the outermost [...] span.
 func extractJSONArray(raw string) string {

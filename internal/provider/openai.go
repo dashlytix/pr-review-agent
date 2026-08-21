@@ -91,6 +91,38 @@ func (p *OpenAIProvider) Assess(ctx context.Context, req AssessmentRequest) ([]A
 	return findings, nil
 }
 
+// Review mirrors OpenAIProvider.Assess but drives the plain PR-review
+// path: a different system prompt (assess.ReviewSystemPrompt) and parse
+// function (assess.ParseReviewAssessments), since there's no mandatory
+// "ci-failure" category here.
+func (p *OpenAIProvider) Review(ctx context.Context, req AssessmentRequest) ([]Assessment, error) {
+	prompt := assess.BuildReviewPrompt(req)
+
+	raw, err := p.complete(ctx, assess.ReviewSystemPrompt, prompt)
+	if err != nil {
+		return nil, fmt.Errorf("openai: review call failed: %w", err)
+	}
+
+	findings, parseErr := assess.ParseReviewAssessments(raw)
+	if parseErr == nil {
+		assess.ValidateAnchors(req, findings)
+		return findings, nil
+	}
+
+	repaired, repairErr := p.complete(ctx, assess.ReviewRepairSystemPrompt, raw)
+	if repairErr != nil {
+		return nil, fmt.Errorf("%w: original parse error: %v; repair call failed: %v", assess.ErrMalformed, parseErr, repairErr)
+	}
+
+	findings, err = assess.ParseReviewAssessments(repaired)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", assess.ErrMalformed, err)
+	}
+
+	assess.ValidateAnchors(req, findings)
+	return findings, nil
+}
+
 func (p *OpenAIProvider) complete(ctx context.Context, system, user string) (string, error) {
 	body := openAIRequest{
 		Model: p.Model,
