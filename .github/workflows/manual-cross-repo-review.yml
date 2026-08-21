@@ -6,6 +6,16 @@
 # Posting requires a token with write access to the target repo, since
 # the default github.token is scoped to this repo only -- CROSS_REPO_TOKEN
 # is that token.
+#
+# Deliberately does NOT use `uses: ./` -- for a Docker container action,
+# the runner's own job-context injection re-supplies GITHUB_EVENT_NAME/
+# GITHUB_EVENT_PATH/GITHUB_REPOSITORY from the *real* triggering event
+# (workflow_dispatch here), silently overriding any step-level `env:`
+# override of the same names. That was tried and confirmed broken: the
+# container saw the real workflow_dispatch context, not the synthetic
+# pull_request one, and silently no-opped. Building and running the
+# image by hand sidesteps that injection entirely -- every env var the
+# container sees is one this workflow explicitly passed with `-e KEY=value`.
 name: Manual Cross-Repo Review
 
 on:
@@ -29,21 +39,31 @@ jobs:
 
       # Builds a synthetic pull_request "opened" webhook payload from the
       # target PR's real metadata, since main.go's pull_request path
-      # expects GITHUB_EVENT_PATH to hold that shape.
+      # expects GITHUB_EVENT_PATH to hold that shape. World-readable so
+      # the container's non-root user can read the bind-mounted file.
       - name: Build synthetic pull_request event
         env:
           GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
         run: |
           gh api "repos/${{ inputs.target_repo }}/pulls/${{ inputs.pr_number }}" > /tmp/pr.json
           jq -n --slurpfile pr /tmp/pr.json '{action: "opened", pull_request: $pr[0]}' > /tmp/event.json
+          chmod 644 /tmp/event.json
 
-      - uses: ./
+      - name: Build agent image
+        run: docker build -t manual-cross-repo-review -f Dockerfile .
+
+      - name: Run agent review against the target PR
         env:
-          GITHUB_EVENT_NAME: pull_request
-          GITHUB_EVENT_PATH: /tmp/event.json
-          GITHUB_REPOSITORY: ${{ inputs.target_repo }}
-        with:
-          llm-provider: claude
-          llm-api-key: ${{ secrets.LLM_API_KEY }}
-          llm-model: claude-opus-5
-          github-token: ${{ secrets.CROSS_REPO_TOKEN }}
+          LLM_API_KEY_VALUE: ${{ secrets.LLM_API_KEY }}
+          CROSS_REPO_TOKEN_VALUE: ${{ secrets.CROSS_REPO_TOKEN }}
+        run: |
+          docker run --rm \
+            -e GITHUB_EVENT_NAME=pull_request \
+            -e GITHUB_EVENT_PATH=/event.json \
+            -e GITHUB_REPOSITORY="${{ inputs.target_repo }}" \
+            -e "INPUT_LLM-PROVIDER=claude" \
+            -e "INPUT_LLM-API-KEY=${LLM_API_KEY_VALUE}" \
+            -e "INPUT_LLM-MODEL=claude-opus-5" \
+            -e "INPUT_GITHUB-TOKEN=${CROSS_REPO_TOKEN_VALUE}" \
+            -v /tmp/event.json:/event.json:ro \
+            manual-cross-repo-review
