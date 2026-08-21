@@ -126,6 +126,50 @@ func TestRenderMinimal_IncludesReasonAndMarker(t *testing.T) {
 	}
 }
 
+func TestRenderReviewFindings_NoIssuesSaysSo(t *testing.T) {
+	body := RenderReviewFindings(nil, "abc1234")
+
+	if !strings.Contains(body, "No issues found") {
+		t.Errorf("expected an explicit no-issues message for an empty findings slice, got:\n%s", body)
+	}
+	if !strings.Contains(body, reviewMarker("abc1234")) {
+		t.Error("expected the review marker to be embedded even when there are no findings")
+	}
+}
+
+func TestRenderReviewFindings_RendersEachFinding(t *testing.T) {
+	findings := []provider.Assessment{
+		{File: "a.go", Line: 1, Category: "correctness", Severity: "P2", Comment: "off-by-one", Confidence: "medium", Anchored: true},
+		{File: "b.go", Line: 7, Category: "security", Severity: "P0", Comment: "a hardcoded credential", Confidence: "high", Anchored: true},
+	}
+
+	body := RenderReviewFindings(findings, "abc1234")
+
+	if !strings.Contains(body, "a.go:1") || !strings.Contains(body, "off-by-one") {
+		t.Errorf("expected the first finding to render, got:\n%s", body)
+	}
+	if !strings.Contains(body, "b.go:7") || !strings.Contains(body, "hardcoded credential") {
+		t.Errorf("expected the second finding to render, got:\n%s", body)
+	}
+}
+
+// A CI-failure comment (marker) and a review comment (reviewMarker) on
+// the same commit SHA must not collide in findByMarker's substring
+// search, or one path's idempotency check would wrongly report the
+// other's comment as already posted.
+func TestMarkerAndReviewMarker_NeverCollide(t *testing.T) {
+	sha := "abc1234"
+	ciBody := RenderFallback("", sha)
+	reviewBody := RenderReviewFallback(sha)
+
+	if strings.Contains(ciBody, reviewMarker(sha)) {
+		t.Error("a CI-failure comment must not embed the review marker")
+	}
+	if strings.Contains(reviewBody, marker(sha)) {
+		t.Error("a review comment must not embed the CI-failure marker")
+	}
+}
+
 func TestMarker_DiffersBySHA(t *testing.T) {
 	if marker("abc1234") == marker("def5678") {
 		t.Error("markers for different SHAs must differ, or idempotency lookup would collide across commits")

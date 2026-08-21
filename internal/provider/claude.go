@@ -112,6 +112,38 @@ func (p *ClaudeProvider) Assess(ctx context.Context, req AssessmentRequest) ([]A
 	return findings, nil
 }
 
+// Review mirrors Assess but drives the plain PR-review path: a different
+// system prompt (assess.ReviewSystemPrompt) and parse function
+// (assess.ParseReviewAssessments), since there's no mandatory "ci-failure"
+// category here.
+func (p *ClaudeProvider) Review(ctx context.Context, req AssessmentRequest) ([]Assessment, error) {
+	prompt := assess.BuildReviewPrompt(req)
+
+	raw, err := p.complete(ctx, assess.ReviewSystemPrompt, prompt, 3072)
+	if err != nil {
+		return nil, fmt.Errorf("claude: review call failed: %w", err)
+	}
+
+	findings, parseErr := assess.ParseReviewAssessments(raw)
+	if parseErr == nil {
+		assess.ValidateAnchors(req, findings)
+		return findings, nil
+	}
+
+	repaired, repairErr := p.complete(ctx, assess.ReviewRepairSystemPrompt, raw, 2048)
+	if repairErr != nil {
+		return nil, fmt.Errorf("%w: original parse error: %v; repair call failed: %v", assess.ErrMalformed, parseErr, repairErr)
+	}
+
+	findings, err = assess.ParseReviewAssessments(repaired)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", assess.ErrMalformed, err)
+	}
+
+	assess.ValidateAnchors(req, findings)
+	return findings, nil
+}
+
 // complete is the low-level call shared by the initial assessment and the
 // repair attempt. Both are plain single-turn text completions — tools
 // stay disabled throughout, per §7.

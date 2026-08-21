@@ -110,6 +110,27 @@ func Gather(ctx context.Context, client *ghclient.Client, runID int64, prNumber 
 	return result, nil
 }
 
+// GatherForReview fetches just the PR diff and touched files for the
+// plain PR-review path (pull_request opened/synchronize) — no CI run is
+// involved here, so there's no log tail to fetch.
+func GatherForReview(ctx context.Context, client *ghclient.Client, prNumber int) (assess.AssessmentRequest, error) {
+	var req assess.AssessmentRequest
+
+	diff, err := fetchDiff(ctx, client, prNumber)
+	if err != nil {
+		return req, fmt.Errorf("gather: fetch diff: %w", err)
+	}
+	req.Diff = diff
+
+	files, err := fetchFiles(ctx, client, prNumber)
+	if err != nil {
+		return req, fmt.Errorf("gather: fetch files: %w", err)
+	}
+	req.Files = files
+
+	return req, nil
+}
+
 // resolvePRNumber falls back to GitHub's "list pull requests associated
 // with a commit" endpoint when the workflow_run event payload didn't
 // carry pull_requests (this happens for some fork-originated runs).

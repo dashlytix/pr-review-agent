@@ -26,8 +26,14 @@ type Assessment = assess.Assessment
 // implement, per §4.2. Assess returns a slice rather than a single
 // Assessment: exactly one "ci-failure" finding plus zero or more
 // additional review findings spotted in the same diff.
+//
+// Review drives the separate plain-PR-review path (the pull_request
+// opened/synchronize trigger, independent of any CI outcome): no
+// category is mandatory, and an empty slice is the common "no issues
+// found" result.
 type Provider interface {
 	Assess(ctx context.Context, req AssessmentRequest) ([]Assessment, error)
+	Review(ctx context.Context, req AssessmentRequest) ([]Assessment, error)
 }
 
 // envOr reads an environment variable, falling back to def when unset or

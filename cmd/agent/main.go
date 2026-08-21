@@ -58,8 +58,10 @@ type workflowRunEvent struct {
 }
 
 // pullRequestEvent is the GITHUB_EVENT_PATH payload for
-// GITHUB_EVENT_NAME=pull_request, used to drive Slack notifications for
-// PR opened/closed/merged.
+// GITHUB_EVENT_NAME=pull_request. It drives both the Slack lifecycle
+// notifications (opened/closed/merged) and, on opened/synchronize, the
+// plain PR-review path (reviewPR) — Head.SHA is only needed by the
+// latter.
 type pullRequestEvent struct {
 	Action      string `json:"action"`
 	PullRequest struct {
@@ -73,6 +75,9 @@ type pullRequestEvent struct {
 		Base struct {
 			Ref string `json:"ref"`
 		} `json:"base"`
+		Head struct {
+			SHA string `json:"sha"`
+		} `json:"head"`
 		Merged             bool `json:"merged"`
 		RequestedReviewers []struct {
 			Login string `json:"login"`
@@ -125,25 +130,40 @@ func run() error {
 		if err != nil {
 			return fmt.Errorf("read pull_request event: %w", err)
 		}
-		return handlePullRequestEvent(ctx, event, slackWebhookURL, prodBranch)
+		if err := handlePullRequestEvent(ctx, event, slackWebhookURL, prodBranch); err != nil {
+			return err
+		}
+
+		// opened/synchronize also get a full code review — closed and any
+		// other action stop here, same as handlePullRequestEvent's own
+		// no-op default for actions it doesn't send a Slack ping for.
+		if event.Action != "opened" && event.Action != "synchronize" {
+			return nil
+		}
+		// The review path needs a provider, same fail-fast as the
+		// schedule/workflow_run paths below; the notify-only actions
+		// (closed) returned above without ever needing one.
+		if apiKey == "" {
+			return fmt.Errorf("missing llm-api-key input")
+		}
+		llmProvider, err := buildProvider(providerName, apiKey, llmBaseURL, llmModel)
+		if err != nil {
+			return err
+		}
+		client := ghclient.New(token, owner, repo)
+		pr := event.PullRequest
+		return reviewPR(ctx, client, llmProvider, pr.Number, pr.HTMLURL, pr.Title, pr.Head.SHA, slackWebhookURL)
 	}
 
 	// The remaining paths (schedule, workflow_run) drive an LLM
-	// assessment, so they need a provider — pull_request notifications
-	// above don't and are handled before this fail-fast check.
+	// assessment, so they need a provider — the pull_request "closed"
+	// notification above doesn't and returns before reaching here.
 	if apiKey == "" {
 		return fmt.Errorf("missing llm-api-key input")
 	}
-	llmCfg := provider.ConfigFromEnv(providerName, apiKey)
-	if llmBaseURL != "" {
-		llmCfg.BaseURL = llmBaseURL
-	}
-	if llmModel != "" {
-		llmCfg.Model = llmModel
-	}
-	llmProvider, err := provider.New(llmCfg)
+	llmProvider, err := buildProvider(providerName, apiKey, llmBaseURL, llmModel)
 	if err != nil {
-		return err // unsupported provider name — fail fast, per §7
+		return err
 	}
 
 	client := ghclient.New(token, owner, repo)
@@ -167,6 +187,21 @@ func run() error {
 	}
 
 	return investigate(ctx, client, llmProvider, event.WorkflowRun.ID, prNumber, slackWebhookURL)
+}
+
+// buildProvider resolves a Provider from action inputs, shared by every
+// path that needs one (workflow_run, schedule, and the pull_request
+// review path) so the base-URL/model override precedence lives in one
+// place.
+func buildProvider(providerName, apiKey, llmBaseURL, llmModel string) (provider.Provider, error) {
+	llmCfg := provider.ConfigFromEnv(providerName, apiKey)
+	if llmBaseURL != "" {
+		llmCfg.BaseURL = llmBaseURL
+	}
+	if llmModel != "" {
+		llmCfg.Model = llmModel
+	}
+	return provider.New(llmCfg) // unsupported provider name fails fast here, per §7
 }
 
 // handlePullRequestEvent sends a Slack notification for a PR
@@ -269,6 +304,62 @@ func investigate(ctx context.Context, client *ghclient.Client, llmProvider provi
 	writeOutput("comment-url", url)
 	writeOutput("comment-body", body)
 	return nil
+}
+
+// reviewPR runs a plain PR code review — independent of any CI outcome —
+// for the pull_request opened/synchronize trigger. It mirrors
+// investigate()'s gather → assess → post shape and §7 degrade-gracefully
+// rules, scaled down since there's no CI run to fall back to. Posting
+// uses PostReview/reviewMarker, a distinct marker from investigate()'s,
+// so a review comment and a CI-failure comment on the same commit SHA
+// never collide in the idempotency lookup.
+func reviewPR(ctx context.Context, client *ghclient.Client, llmProvider provider.Provider, prNumber int, htmlURL, title, headSHA, slackWebhookURL string) error {
+	req, gatherErr := gather.GatherForReview(ctx, client, prNumber)
+
+	var findings []provider.Assessment
+	assessErr := gatherErr
+	if gatherErr == nil {
+		findings, assessErr = llmProvider.Review(ctx, req)
+	}
+
+	body := renderReviewBody(assessErr, findings, headSHA)
+
+	url, alreadyPosted, err := post.PostReview(ctx, client, prNumber, headSHA, body)
+	if err != nil {
+		return fmt.Errorf("post: %w", err)
+	}
+	if alreadyPosted {
+		log.Printf("pr %d: review already posted: %s", prNumber, url)
+		return nil
+	}
+
+	log.Printf("pr %d: posted review: %s", prNumber, url)
+	if err := notify.Send(ctx, slackWebhookURL, notify.RenderAssessmentPosted(title, htmlURL, url)); err != nil {
+		log.Printf("warning: slack notification failed: %v", err)
+	}
+	return nil
+}
+
+// renderReviewBody is renderBody's counterpart for the review path: the
+// same §7 degrade-gracefully cases, minus the fallback's raw-logs link
+// (there's no CI run here to link to).
+func renderReviewBody(assessErr error, findings []provider.Assessment, headSHA string) string {
+	switch {
+	case assessErr == nil:
+		return post.RenderReviewFindings(findings, headSHA)
+
+	case errors.Is(assessErr, assess.ErrMalformed):
+		log.Printf("review malformed after repair attempt: %v", assessErr)
+		return post.RenderReviewMinimal("the model's output could not be parsed as a valid review, even after one repair attempt", headSHA)
+
+	case isRateLimited(assessErr):
+		log.Printf("rate limited: %v", assessErr)
+		return post.RenderReviewMinimal("the GitHub API rate limit was hit while gathering the diff", headSHA)
+
+	default:
+		log.Printf("provider unavailable: %v", assessErr)
+		return post.RenderReviewFallback(headSHA)
+	}
 }
 
 // reconcile is the §7 backstop for a dropped webhook: sweep recent

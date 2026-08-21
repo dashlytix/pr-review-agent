@@ -53,6 +53,42 @@ with at least one element having "category": "ci-failure".
 
 It is not valid JSON, or does not match that shape. Extract the intended meaning and re-emit it as exactly one valid JSON array matching that shape — no prose, no markdown fence, nothing else. If a field cannot be recovered, use "" for strings, 0 for line, and false for anchored. If you cannot recover any ci-failure finding at all, emit a single-element array with category "ci-failure", empty file, 0 line, false anchored, and your best-effort comment.`
 
+// ReviewSystemPrompt drives the plain PR-review path (the pull_request
+// opened/synchronize trigger), independent of any CI outcome — there is
+// no CI log to diagnose, so unlike SystemPrompt no category is
+// mandatory. Findings reuse the same schema as SystemPrompt per §4.4
+// rather than a parallel one, minus "ci-failure" itself.
+const ReviewSystemPrompt = `You are an AI code reviewer. You are given a pull request's diff and the contents/patches of the files it touches. You never suggest merging, re-running jobs, or applying fixes yourself — you only explain findings for a human to act on.
+
+The change is expected to be in one of: Go, Rust, TypeScript, or SQL, but reason from the evidence in front of you rather than assuming.
+
+Respond with a single JSON array and nothing else — no prose before or after, no markdown code fence. The array holds zero or more findings, one per real issue you notice. Do not manufacture findings to pad the list — an empty array ("[]") is the correct, and common, response when the diff has no issues worth flagging.
+
+Each array element must have exactly these fields:
+
+{
+  "file": string,           // path the finding applies to; "" if none is identifiable
+  "line": integer,          // 1-based line number in that file; 0 if none is identifiable
+  "category": string,       // "correctness" | "security" | "style" | "performance"
+  "severity": string,       // one of: "P0", "P1", "P2", "P3", "nit"
+  "comment": string,        // the finding, in prose, referencing specific evidence from the diff
+  "suggested_fix": string,  // a concrete next step; "" if you have no actionable suggestion
+  "confidence": string,     // one of: "high", "medium", "low" — how sure you are this finding is correct
+  "anchored": boolean       // true only if "file" and "line" both fall within the diff you were given; false otherwise
+}`
+
+// ReviewRepairSystemPrompt is ReviewSystemPrompt's counterpart to
+// RepairSystemPrompt: the single bounded reformat attempt (§7) for the
+// review path, where an empty array is a valid recovered result rather
+// than something to avoid.
+const ReviewRepairSystemPrompt = `The following text was supposed to be a single JSON array of findings, each matching this exact shape:
+
+{"file": string, "line": integer, "category": "correctness"|"security"|"style"|"performance", "severity": "P0"|"P1"|"P2"|"P3"|"nit", "comment": string, "suggested_fix": string, "confidence": "high"|"medium"|"low", "anchored": boolean}
+
+An empty array ("[]") is valid and means no issues were found.
+
+It is not valid JSON, or does not match that shape. Extract the intended meaning and re-emit it as exactly one valid JSON array matching that shape — no prose, no markdown fence, nothing else. If a field cannot be recovered, use "" for strings, 0 for line, and false for anchored. If you cannot recover any findings at all, emit an empty array.`
+
 // BuildPrompt renders the user-turn prompt from gathered CI context.
 func BuildPrompt(req AssessmentRequest) string {
 	var b strings.Builder
@@ -67,6 +103,37 @@ func BuildPrompt(req AssessmentRequest) string {
 	}
 
 	b.WriteString("\n\n## PR diff\n")
+	if req.Diff == "" {
+		b.WriteString("(no diff available)")
+	} else {
+		b.WriteString(truncate(req.Diff, 12000))
+	}
+
+	b.WriteString("\n\n## Touched files\n")
+	if len(req.Files) == 0 {
+		b.WriteString("(none)")
+	} else {
+		names := make([]string, 0, len(req.Files))
+		for name := range req.Files {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			b.WriteString(fmt.Sprintf("\n### %s\n", name))
+			b.WriteString(truncate(req.Files[name], 3000))
+		}
+	}
+
+	return b.String()
+}
+
+// BuildReviewPrompt renders the user-turn prompt for the plain PR-review
+// path — just the diff and touched files, with no CI log/test sections
+// since this path never runs from a CI failure.
+func BuildReviewPrompt(req AssessmentRequest) string {
+	var b strings.Builder
+
+	b.WriteString("## PR diff\n")
 	if req.Diff == "" {
 		b.WriteString("(no diff available)")
 	} else {

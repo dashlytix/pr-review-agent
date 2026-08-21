@@ -126,6 +126,48 @@ func TestErrMalformed_SurvivesWrapping(t *testing.T) {
 	}
 }
 
+func TestParseReviewAssessments_EmptyArrayIsValid(t *testing.T) {
+	findings, err := ParseReviewAssessments("[]")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("expected 0 findings, got %d", len(findings))
+	}
+}
+
+func TestParseReviewAssessments_ValidFinding(t *testing.T) {
+	raw := `[{"file":"a.go","line":1,"category":"correctness","severity":"P2","comment":"off-by-one","suggested_fix":"use <=","confidence":"medium","anchored":true}]`
+
+	findings, err := ParseReviewAssessments(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(findings) != 1 || findings[0].Category != "correctness" {
+		t.Errorf("got %+v", findings)
+	}
+}
+
+func TestParseReviewAssessments_RejectsCIFailureCategory(t *testing.T) {
+	raw := `[{"file":"a.go","line":1,"category":"ci-failure","severity":"P1","comment":"x","suggested_fix":"","confidence":"low","anchored":false}]`
+	if _, err := ParseReviewAssessments(raw); err == nil {
+		t.Fatal("expected an error for a ci-failure category in the review path — there's no CI failure to diagnose here")
+	}
+}
+
+func TestParseReviewAssessments_InvalidCategory(t *testing.T) {
+	raw := `[{"file":"a.go","line":1,"category":"performance-nonsense","severity":"P1","comment":"x","suggested_fix":"","confidence":"low","anchored":false}]`
+	if _, err := ParseReviewAssessments(raw); err == nil {
+		t.Fatal("expected an error for an out-of-enum category")
+	}
+}
+
+func TestParseReviewAssessments_NoJSONFound(t *testing.T) {
+	if _, err := ParseReviewAssessments("I couldn't figure this one out, sorry."); err == nil {
+		t.Fatal("expected an error when no JSON array is present")
+	}
+}
+
 func TestExtractJSONArray_IgnoresSurroundingProse(t *testing.T) {
 	raw := `Sure thing! [{"file":"x","line":1,"category":"ci-failure","severity":"P1","comment":"c","suggested_fix":"","confidence":"low","anchored":false}] Hope that helps.`
 	got := extractJSONArray(raw)
