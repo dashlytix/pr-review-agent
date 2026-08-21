@@ -1,0 +1,49 @@
+# One-off tool: manually run this repo's AI PR review against a PR in a
+# *different* repo. Not part of the normal CI/PR-lifecycle triggers in
+# ai-ci-agent.yml -- this exists to try the agent against another repo's
+# real PR without wiring the full action into that repo.
+#
+# Posting requires a token with write access to the target repo, since
+# the default github.token is scoped to this repo only -- CROSS_REPO_TOKEN
+# is that token.
+name: Manual Cross-Repo Review
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        description: "owner/repo containing the PR to review (e.g. dashlytix/dash-ai-agent)"
+        required: true
+      pr_number:
+        description: "PR number in that repo"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      # Builds a synthetic pull_request "opened" webhook payload from the
+      # target PR's real metadata, since main.go's pull_request path
+      # expects GITHUB_EVENT_PATH to hold that shape.
+      - name: Build synthetic pull_request event
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
+        run: |
+          gh api "repos/${{ inputs.target_repo }}/pulls/${{ inputs.pr_number }}" > /tmp/pr.json
+          jq -n --slurpfile pr /tmp/pr.json '{action: "opened", pull_request: $pr[0]}' > /tmp/event.json
+
+      - uses: ./
+        env:
+          GITHUB_EVENT_NAME: pull_request
+          GITHUB_EVENT_PATH: /tmp/event.json
+          GITHUB_REPOSITORY: ${{ inputs.target_repo }}
+        with:
+          llm-provider: claude
+          llm-api-key: ${{ secrets.LLM_API_KEY }}
+          llm-model: claude-opus-5
+          github-token: ${{ secrets.CROSS_REPO_TOKEN }}
