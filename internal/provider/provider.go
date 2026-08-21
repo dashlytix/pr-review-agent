@@ -70,7 +70,13 @@ type Config struct {
 // which keeps configuration precedence in one visible place instead of
 // spread across constructors.
 func New(cfg Config) (Provider, error) {
-	client := &http.Client{Timeout: 90 * time.Second}
+	// 180s, not 90s: Review's larger completion budget (see claude.go) can
+	// take longer to generate than this client waited for, observed as
+	// "Client.Timeout exceeded while awaiting headers" against a large
+	// real PR. Still comfortably under the 4-minute default step timeout
+	// (stepTimeout in cmd/agent/main.go), leaving room for the rest of
+	// the gather/post pipeline.
+	client := &http.Client{Timeout: 180 * time.Second}
 	switch cfg.Name {
 	case "", "claude":
 		p := NewClaudeProvider(cfg.APIKey, client)
