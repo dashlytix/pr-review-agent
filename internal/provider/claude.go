@@ -119,7 +119,12 @@ func (p *ClaudeProvider) Assess(ctx context.Context, req AssessmentRequest) ([]A
 func (p *ClaudeProvider) Review(ctx context.Context, req AssessmentRequest) ([]Assessment, error) {
 	prompt := assess.BuildReviewPrompt(req)
 
-	raw, err := p.complete(ctx, assess.ReviewSystemPrompt, prompt, 3072)
+	// A large PR's diff+files prompt gives a reasoning-capable model much
+	// more to think through than the bounded CI-failure context Assess
+	// sends, so this budget is bigger than Assess's 3072 -- too small a
+	// budget here means the model can burn it all on the "thinking" block
+	// and return no text at all (observed against a real 1600+ line PR).
+	raw, err := p.complete(ctx, assess.ReviewSystemPrompt, prompt, 8192)
 	if err != nil {
 		return nil, fmt.Errorf("claude: review call failed: %w", err)
 	}
