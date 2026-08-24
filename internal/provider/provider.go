@@ -83,7 +83,21 @@ func New(cfg Config) (Provider, error) {
 	switch cfg.Name {
 	case "", "claude":
 		p := NewClaudeProvider(cfg.APIKey, client)
-		if cfg.BaseURL != "" {
+		if cfg.BaseURL == "" {
+			// No explicit gateway named (action input or env var):
+			// default to the two-tier chain -- try the llm-2 exe-llm
+			// gateway first (implicit, VM-tag-scoped credentials),
+			// falling back to calling Anthropic directly with the real
+			// configured key on a tier-1-specific failure. An explicit
+			// BaseURL means a workflow author named their own gateway;
+			// that shouldn't be silently supplemented with a fallback
+			// they didn't ask for, matching this repo's existing
+			// "inputs win over ambient config" precedent.
+			p.BaseURL = llm2GatewayURL
+			p.APIKey = llm2GatewayAPIKey
+			p.FallbackBaseURL = defaultClaudeAPIURL
+			p.FallbackAPIKey = cfg.APIKey
+		} else {
 			p.BaseURL = resolveEndpoint(cfg.BaseURL, claudeAPIPath)
 		}
 		if cfg.Model != "" {

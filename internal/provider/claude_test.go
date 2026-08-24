@@ -29,6 +29,85 @@ func newTestClaudeProvider(server *httptest.Server) *ClaudeProvider {
 
 const validFindingsJSON = `[{"file":"a.go","line":1,"category":"ci-failure","severity":"P1","comment":"the cause","suggested_fix":"fix it","confidence":"high","anchored":true}]`
 
+func TestClaudeProvider_Assess_FallsBackOnTier1_402(t *testing.T) {
+	var tier2Calls int32
+	var tier2APIKey string
+
+	tier1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Matches the real exe-llm failure mode: a plain-text error body,
+		// not JSON.
+		w.WriteHeader(http.StatusPaymentRequired)
+		w.Write([]byte("LLM credits exhausted; credits refresh over time"))
+	}))
+	defer tier1.Close()
+
+	tier2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&tier2Calls, 1)
+		tier2APIKey = r.Header.Get("x-api-key")
+		json.NewEncoder(w).Encode(claudeTextResponse(validFindingsJSON))
+	}))
+	defer tier2.Close()
+
+	p := NewClaudeProvider("real-anthropic-key", &http.Client{})
+	p.BaseURL = tier1.URL
+	p.APIKey = "implicit"
+	p.FallbackBaseURL = tier2.URL
+	p.FallbackAPIKey = "real-anthropic-key"
+
+	findings, err := p.Assess(context.Background(), assess.AssessmentRequest{})
+	if err != nil {
+		t.Fatalf("expected the fallback tier to serve the request, got error: %v", err)
+	}
+	if len(findings) != 1 || findings[0].Category != "ci-failure" {
+		t.Errorf("got %+v", findings)
+	}
+	if tier2Calls != 1 {
+		t.Errorf("expected exactly 1 call to tier 2, got %d", tier2Calls)
+	}
+	if tier2APIKey != "real-anthropic-key" {
+		t.Errorf("tier 2 saw x-api-key %q, want the fallback (real) key, not tier 1's implicit sentinel", tier2APIKey)
+	}
+}
+
+func TestClaudeProvider_Assess_DoesNotFallBackOnContentError(t *testing.T) {
+	var tier1Calls, tier2Calls int32
+
+	tier1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&tier1Calls, 1)
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]string{"message": "prompt is too long: context length exceeded"},
+		})
+	}))
+	defer tier1.Close()
+
+	tier2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&tier2Calls, 1)
+		json.NewEncoder(w).Encode(claudeTextResponse(validFindingsJSON))
+	}))
+	defer tier2.Close()
+
+	p := NewClaudeProvider("real-anthropic-key", &http.Client{})
+	p.BaseURL = tier1.URL
+	p.APIKey = "implicit"
+	p.FallbackBaseURL = tier2.URL
+	p.FallbackAPIKey = "real-anthropic-key"
+
+	_, err := p.Assess(context.Background(), assess.AssessmentRequest{})
+	if err == nil {
+		t.Fatal("expected the 400 content-level error to surface, not be masked by a fallback attempt")
+	}
+	if !strings.Contains(err.Error(), "context length exceeded") {
+		t.Errorf("expected tier 1's real error message to surface, got: %v", err)
+	}
+	if tier2Calls != 0 {
+		t.Errorf("expected tier 2 to never be called for a content-level error, got %d calls", tier2Calls)
+	}
+	if tier1Calls != 1 {
+		t.Errorf("expected exactly 1 call to tier 1, got %d", tier1Calls)
+	}
+}
+
 func TestClaudeProvider_Assess_Success(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("x-api-key") != "test-key" {

@@ -48,7 +48,10 @@ func TestGet_ClaudeRespectsEnvOverrides(t *testing.T) {
 	}
 }
 
-func TestGet_ClaudeWithoutEnvOverridesUsesDefaults(t *testing.T) {
+// With no explicit gateway named (no action input, no env override),
+// ClaudeProvider now defaults to the two-tier chain: llm-2 first, direct
+// Anthropic (with the real configured key) as fallback.
+func TestGet_ClaudeWithoutEnvOverridesUsesTwoTierDefault(t *testing.T) {
 	os.Unsetenv("ANTHROPIC_BASE_URL")
 	os.Unsetenv("ANTHROPIC_MODEL")
 
@@ -57,8 +60,17 @@ func TestGet_ClaudeWithoutEnvOverridesUsesDefaults(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	cp := p.(*ClaudeProvider)
-	if cp.BaseURL != defaultClaudeAPIURL {
-		t.Errorf("BaseURL = %q, want the Anthropic default", cp.BaseURL)
+	if cp.BaseURL != llm2GatewayURL {
+		t.Errorf("BaseURL = %q, want the llm-2 gateway as the default primary tier", cp.BaseURL)
+	}
+	if cp.APIKey != llm2GatewayAPIKey {
+		t.Errorf("APIKey = %q, want the llm-2 gateway's implicit sentinel", cp.APIKey)
+	}
+	if cp.FallbackBaseURL != defaultClaudeAPIURL {
+		t.Errorf("FallbackBaseURL = %q, want the Anthropic default", cp.FallbackBaseURL)
+	}
+	if cp.FallbackAPIKey != "key" {
+		t.Errorf("FallbackAPIKey = %q, want the real configured key", cp.FallbackAPIKey)
 	}
 	if cp.Model != "claude-sonnet-5" {
 		t.Errorf("Model = %q, want the built-in default", cp.Model)
