@@ -38,15 +38,17 @@ jobs:
           llm-provider: claude
           # llm-base-url is deliberately left unset: with no explicit
           # gateway named, ClaudeProvider's own two-tier default kicks
-          # in (internal/provider/provider.go) -- try the llm-2 exe-llm
-          # gateway first (implicit, VM-tag-scoped credentials), falling
-          # back to calling Anthropic directly with this LLM_API_KEY
-          # secret on a tier-1-specific failure (401/402/403 or
-          # unreachable). Setting llm-base-url here would disable that
-          # fallback chain entirely, per the "explicit override wins"
-          # precedent in internal/provider.
+          # in (internal/provider/provider.go) -- try the llm-proxy GPT
+          # model first (OpenAI wire format, real credential via
+          # llm-proxy-api-key), falling back to calling Anthropic
+          # directly with LLM_API_KEY on a tier-1-specific failure
+          # (401/402/403 or unreachable). Setting llm-base-url here
+          # would disable that fallback chain entirely, per the
+          # "explicit override wins" precedent in internal/provider.
           llm-api-key: ${{ secrets.LLM_API_KEY }}
-          llm-model: claude-opus-5
+          llm-proxy-api-key: ${{ secrets.LLM_PROXY_API_KEY }}
+          llm-model: gpt-5.6-sol
+          llm-fallback-model: claude-opus-5
           slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
 
   pull-request:
@@ -63,7 +65,11 @@ jobs:
           llm-provider: claude
           # Required by action.yml even though "closed" never reaches the
           # LLM (only the Slack ping) -- "opened"/"synchronize" do, for
-          # the code review.
+          # the code review. Same default two-tier chain as the
+          # investigate job above: llm-proxy GPT model primary, direct
+          # Anthropic fallback.
           llm-api-key: ${{ secrets.LLM_API_KEY }}
-          llm-model: claude-opus-5
+          llm-proxy-api-key: ${{ secrets.LLM_PROXY_API_KEY }}
+          llm-model: gpt-5.6-sol
+          llm-fallback-model: claude-opus-5
           slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}

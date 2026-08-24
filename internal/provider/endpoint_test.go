@@ -49,22 +49,28 @@ func TestGet_ClaudeRespectsEnvOverrides(t *testing.T) {
 }
 
 // With no explicit gateway named (no action input, no env override),
-// ClaudeProvider now defaults to the two-tier chain: llm-2 first, direct
-// Anthropic (with the real configured key) as fallback.
+// ClaudeProvider now defaults to the two-tier chain: the llm-proxy GPT
+// model first (OpenAI wire format), direct Anthropic (with the real
+// configured key) as fallback.
 func TestGet_ClaudeWithoutEnvOverridesUsesTwoTierDefault(t *testing.T) {
 	os.Unsetenv("ANTHROPIC_BASE_URL")
 	os.Unsetenv("ANTHROPIC_MODEL")
+	t.Setenv("LLM_PROXY_API_KEY", "proxy-key")
+	t.Setenv("LLM_MODEL", "gpt-test")
 
 	p, err := Get("claude", "key")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	cp := p.(*ClaudeProvider)
-	if cp.BaseURL != llm2GatewayURL {
-		t.Errorf("BaseURL = %q, want the llm-2 gateway as the default primary tier", cp.BaseURL)
+	if want := "https://llm-proxy.int.exe.xyz/v1/chat/completions"; cp.BaseURL != want {
+		t.Errorf("BaseURL = %q, want the llm-proxy endpoint as the default primary tier", cp.BaseURL)
 	}
-	if cp.APIKey != llm2GatewayAPIKey {
-		t.Errorf("APIKey = %q, want the llm-2 gateway's implicit sentinel", cp.APIKey)
+	if !cp.PrimaryOpenAIStyle {
+		t.Error("expected the default primary tier to be OpenAI-style (llm-proxy)")
+	}
+	if cp.APIKey != "proxy-key" {
+		t.Errorf("APIKey = %q, want the llm-proxy key", cp.APIKey)
 	}
 	if cp.FallbackBaseURL != defaultClaudeAPIURL {
 		t.Errorf("FallbackBaseURL = %q, want the Anthropic default", cp.FallbackBaseURL)
@@ -72,8 +78,24 @@ func TestGet_ClaudeWithoutEnvOverridesUsesTwoTierDefault(t *testing.T) {
 	if cp.FallbackAPIKey != "key" {
 		t.Errorf("FallbackAPIKey = %q, want the real configured key", cp.FallbackAPIKey)
 	}
-	if cp.Model != "claude-sonnet-5" {
-		t.Errorf("Model = %q, want the built-in default", cp.Model)
+	if cp.FallbackModel != defaultClaudeModel {
+		t.Errorf("FallbackModel = %q, want the built-in default %q", cp.FallbackModel, defaultClaudeModel)
+	}
+	if cp.Model != "gpt-test" {
+		t.Errorf("Model = %q, want the llm-model override", cp.Model)
+	}
+}
+
+// With no llm-model configured, the default chain must fail fast rather
+// than guess a GPT model id for the llm-proxy tier.
+func TestGet_ClaudeWithoutEnvOverridesRequiresModel(t *testing.T) {
+	os.Unsetenv("ANTHROPIC_BASE_URL")
+	os.Unsetenv("ANTHROPIC_MODEL")
+	os.Unsetenv("LLM_MODEL")
+	t.Setenv("LLM_PROXY_API_KEY", "proxy-key")
+
+	if _, err := Get("claude", "key"); err == nil {
+		t.Fatal("expected an error when llm-model is unset for the default llm-proxy chain")
 	}
 }
 

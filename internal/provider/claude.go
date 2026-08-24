@@ -16,17 +16,12 @@ import (
 
 const defaultClaudeAPIURL = "https://api.anthropic.com/v1/messages"
 
-// llm2GatewayURL is the exe-llm gateway ClaudeProvider tries first by
-// default (see provider.New) -- reachable only from VMs tagged for
-// llm-2 access. Speaks the identical Anthropic Messages wire format, so
-// no separate request/response types are needed for it.
-const llm2GatewayURL = "https://llm-2.int.exe.xyz/v1/messages"
-
-// llm2GatewayAPIKey is a non-secret sentinel, not a credential: the
-// llm-2 gateway authenticates by VM tag at the network edge, so any
-// non-empty x-api-key value satisfies the Messages API's required
-// header. Safe to keep in source; nothing to rotate or scan for.
-const llm2GatewayAPIKey = "implicit"
+// llmProxyURL is the GPT-model gateway ClaudeProvider tries first by
+// default (see provider.New) -- an OpenAI-compatible endpoint, so
+// requests to it go out via PrimaryOpenAIStyle instead of the Anthropic
+// Messages format. Unlike the old llm-2 gateway this requires a real
+// credential (Config.ProxyAPIKey), not a VM-tag-scoped sentinel.
+const llmProxyURL = "https://llm-proxy.int.exe.xyz"
 
 // claudeAPIPath is the canonical Anthropic Messages path appended to any
 // base-URL override.
@@ -45,16 +40,29 @@ type ClaudeProvider struct {
 	BaseURL string
 	HTTP    *http.Client
 
+	// PrimaryOpenAIStyle, when true, sends BaseURL requests in the
+	// OpenAI chat-completions wire format instead of the Anthropic
+	// Messages format. This lets the primary tier be a GPT model behind
+	// an OpenAI-compatible gateway (e.g. the default llm-proxy tier —
+	// see provider.New) while FallbackBaseURL still speaks straight to
+	// Anthropic. Defaults false, matching every existing single-format
+	// ClaudeProvider.
+	PrimaryOpenAIStyle bool
+
 	// FallbackBaseURL/FallbackAPIKey, if both non-empty, are tried when
 	// a request against BaseURL fails in a way that implicates BaseURL
 	// itself (unreachable, or its credentials/billing are broken)
-	// rather than the request's content -- see shouldFallback. Both
-	// tiers speak the same Anthropic Messages wire format; this is
-	// purely which endpoint/credential gets used, not a second
-	// Provider implementation. Left empty, behavior is identical to
-	// today's single-endpoint ClaudeProvider.
+	// rather than the request's content -- see shouldFallback. The
+	// fallback tier always speaks the Anthropic Messages format
+	// (regardless of PrimaryOpenAIStyle), since it exists to reach
+	// Claude directly. Left empty, behavior is identical to today's
+	// single-endpoint ClaudeProvider.
 	FallbackBaseURL string
 	FallbackAPIKey  string
+	// FallbackModel overrides the model sent to FallbackBaseURL. Empty
+	// falls back to Model, preserving single-tier behavior when only
+	// one model was ever configured.
+	FallbackModel string
 }
 
 func NewClaudeProvider(apiKey string, httpClient *http.Client) *ClaudeProvider {
@@ -223,10 +231,35 @@ func (p *ClaudeProvider) Review(ctx context.Context, req AssessmentRequest) (Rev
 
 // complete is the low-level call shared by the initial assessment and the
 // repair attempt. Both are plain single-turn text completions — tools
-// stay disabled throughout, per §7. Tries BaseURL first, falling
-// through to FallbackBaseURL (if configured) on a fallback-eligible
-// failure per shouldFallback.
+// stay disabled throughout, per §7. Tries BaseURL first (in whichever
+// wire format PrimaryOpenAIStyle selects), falling through to
+// FallbackBaseURL (always Anthropic-format, if configured) on a
+// fallback-eligible failure per shouldFallback.
 func (p *ClaudeProvider) complete(ctx context.Context, system, user string, maxTokens int) (string, error) {
+	text, err := p.doPrimary(ctx, system, user, maxTokens)
+	if err == nil {
+		log.Printf("claude: served by primary tier %s", p.BaseURL)
+		return text, nil
+	}
+	if p.FallbackBaseURL == "" || !shouldFallback(err) {
+		return "", err
+	}
+
+	log.Printf("claude: primary tier %s failed (%v); falling back to %s", p.BaseURL, err, p.FallbackBaseURL)
+	text, fbErr := p.doFallback(ctx, system, user, maxTokens)
+	if fbErr != nil {
+		return "", fmt.Errorf("primary tier %s failed: %v; fallback tier %s also failed: %w", p.BaseURL, err, p.FallbackBaseURL, fbErr)
+	}
+	log.Printf("claude: served by fallback tier %s", p.FallbackBaseURL)
+	return text, nil
+}
+
+// doPrimary sends the request to BaseURL, in Anthropic format unless
+// PrimaryOpenAIStyle selects the OpenAI chat-completions format.
+func (p *ClaudeProvider) doPrimary(ctx context.Context, system, user string, maxTokens int) (string, error) {
+	if p.PrimaryOpenAIStyle {
+		return p.doOpenAIRequest(ctx, p.BaseURL, p.APIKey, p.Model, system, user, maxTokens)
+	}
 	body := claudeRequest{
 		Model:     p.Model,
 		MaxTokens: maxTokens,
@@ -237,22 +270,96 @@ func (p *ClaudeProvider) complete(ctx context.Context, system, user string, maxT
 	if err != nil {
 		return "", err
 	}
+	return p.doRequest(ctx, p.BaseURL, p.APIKey, b)
+}
 
-	text, err := p.doRequest(ctx, p.BaseURL, p.APIKey, b)
-	if err == nil {
-		log.Printf("claude: served by primary tier %s", p.BaseURL)
-		return text, nil
+// doFallback sends the request to FallbackBaseURL, always in Anthropic
+// format — the fallback tier exists specifically to reach Claude
+// directly, independent of what wire format the primary tier used.
+func (p *ClaudeProvider) doFallback(ctx context.Context, system, user string, maxTokens int) (string, error) {
+	model := p.FallbackModel
+	if model == "" {
+		model = p.Model
 	}
-	if p.FallbackBaseURL == "" || !shouldFallback(err) {
+	body := claudeRequest{
+		Model:     model,
+		MaxTokens: maxTokens,
+		System:    system,
+		Messages:  []claudeMessage{{Role: "user", Content: user}},
+	}
+	b, err := json.Marshal(body)
+	if err != nil {
+		return "", err
+	}
+	return p.doRequest(ctx, p.FallbackBaseURL, p.FallbackAPIKey, b)
+}
+
+// proxyChatRequest is the OpenAI chat-completions request body sent to
+// an OpenAI-compatible primary tier (see PrimaryOpenAIStyle). It reuses
+// openAIMessage/openAIResponse from openai.go (same package) and adds
+// MaxTokens, which OpenAIProvider itself never sets.
+type proxyChatRequest struct {
+	Model     string          `json:"model"`
+	Messages  []openAIMessage `json:"messages"`
+	MaxTokens int             `json:"max_tokens,omitempty"`
+}
+
+// doOpenAIRequest sends one chat-completions request in the OpenAI wire
+// format and returns its decoded text. Mirrors doRequest's error
+// classification (apiStatusError/transportError) so shouldFallback
+// applies identically regardless of which format the primary tier used.
+func (p *ClaudeProvider) doOpenAIRequest(ctx context.Context, baseURL, apiKey, model, system, user string, maxTokens int) (string, error) {
+	body := proxyChatRequest{
+		Model: model,
+		Messages: []openAIMessage{
+			{Role: "system", Content: system},
+			{Role: "user", Content: user},
+		},
+		MaxTokens: maxTokens,
+	}
+	b, err := json.Marshal(body)
+	if err != nil {
 		return "", err
 	}
 
-	log.Printf("claude: primary tier %s failed (%v); falling back to %s", p.BaseURL, err, p.FallbackBaseURL)
-	text, fbErr := p.doRequest(ctx, p.FallbackBaseURL, p.FallbackAPIKey, b)
-	if fbErr != nil {
-		return "", fmt.Errorf("primary tier %s failed: %v; fallback tier %s also failed: %w", p.BaseURL, err, p.FallbackBaseURL, fbErr)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL, bytes.NewReader(b))
+	if err != nil {
+		return "", err
 	}
-	log.Printf("claude: served by fallback tier %s", p.FallbackBaseURL)
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := p.HTTP.Do(httpReq)
+	if err != nil {
+		return "", &transportError{err: err}
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	if resp.StatusCode >= 300 {
+		msg := strings.TrimSpace(string(raw))
+		var parsed openAIResponse
+		if json.Unmarshal(raw, &parsed) == nil && parsed.Error != nil && parsed.Error.Message != "" {
+			msg = parsed.Error.Message
+		}
+		return "", &apiStatusError{StatusCode: resp.StatusCode, Message: msg}
+	}
+
+	var parsed openAIResponse
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return "", fmt.Errorf("invalid response body: %w", err)
+	}
+	if len(parsed.Choices) == 0 {
+		return "", fmt.Errorf("empty response choices")
+	}
+	text := strings.TrimSpace(parsed.Choices[0].Message.Content)
+	if text == "" {
+		return "", fmt.Errorf("response contained no text content")
+	}
 	return text, nil
 }
 

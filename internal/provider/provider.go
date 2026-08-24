@@ -66,6 +66,17 @@ type Config struct {
 	BaseURL string
 	// Model optionally overrides the provider's default model.
 	Model string
+	// ProxyAPIKey is the key for the default llm-proxy primary tier
+	// (see New) — a real credential, distinct from APIKey, which that
+	// same default chain uses for its direct-Anthropic fallback tier.
+	// Only consulted when Name is "" or "claude" and BaseURL is unset.
+	ProxyAPIKey string
+	// FallbackModel overrides the model sent to the default chain's
+	// direct-Anthropic fallback tier. Empty uses the built-in
+	// defaultClaudeModel. Model, by contrast, now names the primary
+	// (llm-proxy GPT) tier's model — the two no longer share one value
+	// now that the tiers can be different model families.
+	FallbackModel string
 }
 
 // New builds a Provider from an explicit Config, with no environment
@@ -85,21 +96,34 @@ func New(cfg Config) (Provider, error) {
 		p := NewClaudeProvider(cfg.APIKey, client)
 		if cfg.BaseURL == "" {
 			// No explicit gateway named (action input or env var):
-			// default to the two-tier chain -- try the llm-2 exe-llm
-			// gateway first (implicit, VM-tag-scoped credentials),
-			// falling back to calling Anthropic directly with the real
-			// configured key on a tier-1-specific failure. An explicit
-			// BaseURL means a workflow author named their own gateway;
-			// that shouldn't be silently supplemented with a fallback
-			// they didn't ask for, matching this repo's existing
-			// "inputs win over ambient config" precedent.
-			p.BaseURL = llm2GatewayURL
-			p.APIKey = llm2GatewayAPIKey
+			// default to the two-tier chain -- try the llm-proxy GPT
+			// model first (OpenAI wire format, real credential via
+			// ProxyAPIKey), falling back to calling Anthropic directly
+			// with the real configured key on a tier-1-specific
+			// failure. An explicit BaseURL means a workflow author
+			// named their own gateway; that shouldn't be silently
+			// supplemented with a fallback they didn't ask for,
+			// matching this repo's existing "inputs win over ambient
+			// config" precedent.
+			if cfg.ProxyAPIKey == "" {
+				return nil, fmt.Errorf("provider: llm-proxy-api-key is required for the default claude two-tier chain (no llm-base-url override was given)")
+			}
+			if cfg.Model == "" {
+				return nil, fmt.Errorf("provider: llm-model is required for the default claude two-tier chain (no safe default for the llm-proxy GPT model)")
+			}
+			p.BaseURL = resolveEndpoint(llmProxyURL, openAIAPIPath)
+			p.APIKey = cfg.ProxyAPIKey
+			p.PrimaryOpenAIStyle = true
+			p.Model = cfg.Model
 			p.FallbackBaseURL = defaultClaudeAPIURL
 			p.FallbackAPIKey = cfg.APIKey
-		} else {
-			p.BaseURL = resolveEndpoint(cfg.BaseURL, claudeAPIPath)
+			p.FallbackModel = cfg.FallbackModel
+			if p.FallbackModel == "" {
+				p.FallbackModel = defaultClaudeModel
+			}
+			return p, nil
 		}
+		p.BaseURL = resolveEndpoint(cfg.BaseURL, claudeAPIPath)
 		if cfg.Model != "" {
 			p.Model = cfg.Model
 		}
@@ -133,6 +157,8 @@ func ConfigFromEnv(name, apiKey string) Config {
 	case "", "claude":
 		cfg.BaseURL = envOr("ANTHROPIC_BASE_URL", os.Getenv("LLM_BASE_URL"))
 		cfg.Model = envOr("ANTHROPIC_MODEL", os.Getenv("LLM_MODEL"))
+		cfg.ProxyAPIKey = os.Getenv("LLM_PROXY_API_KEY")
+		cfg.FallbackModel = os.Getenv("ANTHROPIC_FALLBACK_MODEL")
 	case "openai":
 		cfg.BaseURL = envOr("OPENAI_BASE_URL", os.Getenv("LLM_BASE_URL"))
 		cfg.Model = envOr("OPENAI_MODEL", os.Getenv("LLM_MODEL"))

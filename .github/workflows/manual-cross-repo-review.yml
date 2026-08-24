@@ -55,6 +55,7 @@ jobs:
       - name: Run agent review against the target PR
         env:
           LLM_API_KEY_VALUE: ${{ secrets.LLM_API_KEY }}
+          LLM_PROXY_API_KEY_VALUE: ${{ secrets.LLM_PROXY_API_KEY }}
           CROSS_REPO_TOKEN_VALUE: ${{ secrets.CROSS_REPO_TOKEN }}
         run: |
           docker run --rm \
@@ -63,7 +64,9 @@ jobs:
             -e GITHUB_REPOSITORY="${{ inputs.target_repo }}" \
             -e "INPUT_LLM-PROVIDER=claude" \
             -e "INPUT_LLM-API-KEY=${LLM_API_KEY_VALUE}" \
-            -e "INPUT_LLM-MODEL=claude-opus-5" \
+            -e "INPUT_LLM-PROXY-API-KEY=${LLM_PROXY_API_KEY_VALUE}" \
+            -e "INPUT_LLM-MODEL=gpt-5.6-sol" \
+            -e "INPUT_LLM-FALLBACK-MODEL=claude-opus-5" \
             -e "INPUT_GITHUB-TOKEN=${CROSS_REPO_TOKEN_VALUE}" \
             -v /tmp/event.json:/event.json:ro \
             manual-cross-repo-review

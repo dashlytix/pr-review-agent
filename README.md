@@ -50,6 +50,21 @@ The spec's §4.2 code block shows `AssessmentRequest`/`Assessment`/`Provider` al
 
 The base URL may be a bare host, a `/v1` prefix, or a fully qualified endpoint — `provider.resolveEndpoint` appends the provider's canonical path only if it isn't already there, so gateway docs can be pasted as written instead of 404-ing on a doubled `/v1`.
 
+### Default `claude` chain: llm-proxy primary, direct Anthropic fallback
+
+With no `llm-base-url` override, `llm-provider: claude` (the default) doesn't call Anthropic directly — it tries the `llm-proxy` GPT-model gateway (`https://llm-proxy.int.exe.xyz/`, OpenAI chat-completions wire format) first, falling back to calling Anthropic directly with `llm-api-key` only on a tier-1-specific failure (unreachable, or its credentials/billing broken — see `shouldFallback`; a content-level error like context-length-exceeded surfaces immediately instead of retrying tier 2). This means two more inputs are required for the default chain specifically:
+
+```yaml
+- uses: ./
+  with:
+    llm-api-key: ${{ secrets.LLM_API_KEY }}             # fallback tier: direct Anthropic
+    llm-proxy-api-key: ${{ secrets.LLM_PROXY_API_KEY }} # primary tier: llm-proxy GPT model
+    llm-model: gpt-5.6-sol                              # the GPT model id llm-proxy serves
+    llm-fallback-model: claude-opus-5                   # optional; defaults to claude-sonnet-5
+```
+
+Both keys are real credentials and must come from secrets, never hardcoded — `llm-proxy-api-key` unlike the old llm-2 gateway's VM-tag-scoped sentinel. `llm-model` has no built-in default here (`New` fails fast rather than guess a GPT model id) and now names the *primary* tier's model only; `llm-fallback-model` names the fallback tier's model separately (defaulting to `claude-sonnet-5`) — the two stopped sharing one value once the tiers became different model families. Naming your own `llm-base-url` opts out of this whole chain and returns to a single Anthropic-format call, per the "inputs win over ambient config" precedent above.
+
 Configuration precedence, highest first: action inputs (`llm-base-url`/`llm-model`) → provider-specific env vars (`ANTHROPIC_BASE_URL`/`OPENAI_BASE_URL`, and the `_MODEL` equivalents) → provider-neutral `LLM_BASE_URL`/`LLM_MODEL` → the provider's built-in default. Inputs deliberately win over the environment: a workflow that names its gateway explicitly shouldn't be silently redirected by an ambient variable on the runner. The neutral pair exists for gateways that serve both API shapes at one host, so switching `llm-provider` needs no other change.
 
 `provider.New` takes an explicit `Config` and reads no environment itself; `provider.ConfigFromEnv` does the env resolution. Keeping those separate is what makes the precedence above testable in one place rather than scattered across constructors.

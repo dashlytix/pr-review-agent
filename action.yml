@@ -6,10 +6,14 @@ inputs:
     default: 'claude'
   llm-api-key:
     required: true
+  llm-proxy-api-key:
+    description: 'API key for the llm-proxy GPT primary tier used by the default claude two-tier chain (https://llm-proxy.int.exe.xyz/). Only required when llm-provider is claude (default) and llm-base-url is unset; direct-Anthropic fallback still uses llm-api-key.'
   llm-base-url:
     description: 'Override the provider API endpoint to use an API-compatible gateway (e.g. OpenRouter, or a self-hosted proxy). Accepts a bare host, a /v1 prefix, or a fully qualified path. If unset, the provider''s own API is used.'
   llm-model:
-    description: 'Override the model the selected provider requests. If unset, the provider default is used (claude-sonnet-5 / gpt-4o-mini).'
+    description: 'Override the model the selected provider requests. Required for the default claude two-tier chain (the llm-proxy GPT model has no safe default); openai defaults to gpt-4o-mini if unset.'
+  llm-fallback-model:
+    description: 'Override the model sent to the default claude two-tier chain''s direct-Anthropic fallback tier only. If unset, defaults to claude-sonnet-5. Has no effect for openai, or when llm-base-url is set.'
   github-token:
     description: 'Token used to read run context and post the PR comment'
     default: '${{ github.token }}'
