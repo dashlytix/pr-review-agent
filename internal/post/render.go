@@ -7,52 +7,105 @@ import (
 	"github.com/dimension/ai-ci-agent/internal/provider"
 )
 
-// RenderAssessments builds the PR comment body for a successful run.
-// findings always contains exactly one "ci-failure" entry (the mandatory
-// diagnosis) plus zero or more additional review findings spotted in the
-// same diff; all of them post as one comment, not one per finding.
-// staleHeadSHA is empty unless the PR's head moved since context was
-// gathered, in which case §6.3 requires the comment to say so explicitly
-// and drop inline anchoring for every finding.
-func RenderAssessments(findings []provider.Assessment, reviewedSHA, staleHeadSHA string) string {
+// ReviewComment is one inline comment to attach to a GitHub pull request
+// review -- Path/Line reference the diff's new-file side, matching what
+// assess.ValidateAnchor already verified before Anchored was set true.
+type ReviewComment struct {
+	Path string
+	Line int
+	Body string
+}
+
+// severityEmoji buckets the five-level P0..nit severity scale down to a
+// three-color signal a reader can triage at a glance: P0/P1 (the
+// mandatory ci-failure diagnosis is always at least P1; P0 is reserved
+// for a security-relevant break) need attention now, P2/P3 are worth a
+// look, nit is take-it-or-leave-it.
+func severityEmoji(severity string) string {
+	switch severity {
+	case "P0", "P1":
+		return "🔴"
+	case "P2", "P3":
+		return "🟡"
+	default: // "nit", or anything unrecognized
+		return "🟢"
+	}
+}
+
+// RenderAssessmentReview builds the top-level summary and inline comments
+// for a successful CI-failure diagnosis run. The mandatory ci-failure
+// finding becomes the summary's lead paragraph -- it's the run's own
+// diagnosis of why the build broke, not a location-specific finding --
+// while any additional findings become inline comments when anchored, or
+// extra summary bullets otherwise. staleHeadSHA disables every inline
+// comment (§6.3: an anchor computed against a diff that's no longer the
+// PR's head can't be trusted to land on the right line), folding
+// everything into the summary instead.
+func RenderAssessmentReview(findings []provider.Assessment, reviewedSHA, staleHeadSHA string) (string, []ReviewComment) {
 	var b strings.Builder
-	b.WriteString("### 🤖 AI CI Agent — investigation results\n\n")
+	b.WriteString("### 🤖 AI CI Agent — review summary\n\n")
 
-	if staleHeadSHA != "" {
-		b.WriteString(fmt.Sprintf(
-			"> **Note:** this PR's head moved after context was gathered (reviewed `%s`, current head `%s`). Findings below are shown without inline file/line anchors.\n\n",
-			short(reviewedSHA), short(staleHeadSHA),
-		))
-	}
 	stale := staleHeadSHA != ""
-
-	primary, extra := splitPrimary(findings)
-
-	if primary != nil {
-		b.WriteString(renderFinding(*primary, stale))
+	if stale {
+		fmt.Fprintf(&b, "> **Note:** this PR's head moved after context was gathered (reviewed `%s`, current head `%s`). Every finding below is shown without an inline anchor.\n\n",
+			short(reviewedSHA), short(staleHeadSHA))
 	}
 
-	if len(extra) > 0 {
-		b.WriteString("\n---\n**Other findings noticed in this diff**\n")
-		for _, f := range extra {
-			b.WriteString("\n")
-			b.WriteString(renderFinding(f, stale))
+	primary, rest := extractPrimary(findings, "ci-failure")
+	if primary != nil {
+		fmt.Fprintf(&b, "**Diagnosis:** %s %s · %s confidence\n\n%s\n\n",
+			severityEmoji(primary.Severity), primary.Severity, primary.Confidence, orNone(primary.Comment))
+		if strings.TrimSpace(primary.SuggestedFix) != "" {
+			fmt.Fprintf(&b, "**Suggested fix:** %s\n\n", primary.SuggestedFix)
 		}
 	}
 
-	b.WriteString("\n")
+	bullets, comments, counts := bucketFindings(rest, !stale)
+	if len(rest) > 0 {
+		fmt.Fprintf(&b, "%s\n\n", counts.line())
+		for _, bullet := range bullets {
+			fmt.Fprintf(&b, "- %s\n", bullet)
+		}
+		b.WriteString("\n")
+	}
+
 	b.WriteString(marker(reviewedSHA))
-	return b.String()
+	return b.String(), comments
 }
 
-// splitPrimary pulls out the mandatory ci-failure finding (rendered
-// first, on its own) from any additional findings. Falls back to
-// treating the first entry as primary if — contrary to the §-mandated
-// contract enforced in assess.ParseAssessments — no ci-failure finding
-// is present, so rendering never has to handle a nil primary.
-func splitPrimary(findings []provider.Assessment) (*provider.Assessment, []provider.Assessment) {
+// RenderReviewReview is RenderAssessmentReview's counterpart for the plain
+// PR-review path: no mandatory primary finding, and an empty result is a
+// valid, common "no issues found" outcome.
+func RenderReviewReview(findings []provider.Assessment, sha string) (string, []ReviewComment) {
+	var b strings.Builder
+	b.WriteString("### 🤖 AI PR Review\n\n")
+
+	if len(findings) == 0 {
+		b.WriteString("✅ No issues found in this diff.\n\n")
+		b.WriteString(reviewMarker(sha))
+		return b.String(), nil
+	}
+
+	bullets, comments, counts := bucketFindings(findings, true)
+	fmt.Fprintf(&b, "%s\n\n", counts.line())
+	for _, bullet := range bullets {
+		fmt.Fprintf(&b, "- %s\n", bullet)
+	}
+	b.WriteString("\n")
+	b.WriteString(reviewMarker(sha))
+	return b.String(), comments
+}
+
+// extractPrimary pulls the first finding of the given category out of
+// findings, returning it separately from the rest. A "" category (or no
+// match) is a no-op -- used by the review path, which has no mandatory
+// category to pull out.
+func extractPrimary(findings []provider.Assessment, category string) (*provider.Assessment, []provider.Assessment) {
+	if category == "" {
+		return nil, findings
+	}
 	for i := range findings {
-		if findings[i].Category == "ci-failure" {
+		if findings[i].Category == category {
 			primary := findings[i]
 			rest := make([]provider.Assessment, 0, len(findings)-1)
 			rest = append(rest, findings[:i]...)
@@ -60,68 +113,70 @@ func splitPrimary(findings []provider.Assessment) (*provider.Assessment, []provi
 			return &primary, rest
 		}
 	}
-	if len(findings) > 0 {
-		primary := findings[0]
-		return &primary, findings[1:]
-	}
-	return nil, nil
+	return nil, findings
 }
 
-func renderFinding(a provider.Assessment, stale bool) string {
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("**Category:** %s\n", a.Category))
-	b.WriteString(fmt.Sprintf("**Severity:** %s\n", a.Severity))
-	b.WriteString(fmt.Sprintf("**Confidence:** %s\n", a.Confidence))
+type severityCounts struct{ critical, warning, nit int }
 
-	if !stale && a.Anchored && a.File != "" {
-		b.WriteString(fmt.Sprintf("**Location:** `%s:%d`\n", a.File, a.Line))
-	} else if a.File != "" {
-		b.WriteString(fmt.Sprintf("**Location (unanchored):** `%s`\n", a.File))
-	} else {
-		b.WriteString("**Location:** not identified\n")
+func (c severityCounts) line() string {
+	var parts []string
+	if c.critical > 0 {
+		parts = append(parts, fmt.Sprintf("🔴 %d critical", c.critical))
 	}
-
-	b.WriteString("\n")
-	b.WriteString(orNone(a.Comment))
-
-	if strings.TrimSpace(a.SuggestedFix) != "" {
-		b.WriteString("\n\n**Suggested fix:** ")
-		b.WriteString(a.SuggestedFix)
+	if c.warning > 0 {
+		parts = append(parts, fmt.Sprintf("🟡 %d warning", c.warning))
 	}
-	b.WriteString("\n")
-	return b.String()
+	if c.nit > 0 {
+		parts = append(parts, fmt.Sprintf("🟢 %d nit", c.nit))
+	}
+	return strings.Join(parts, "   ")
 }
 
-// RenderReviewFindings builds the PR comment body for the plain
-// PR-review path (pull_request opened/synchronize). Unlike
-// RenderAssessments there is no mandatory primary finding — an empty
-// slice is a valid, common outcome and renders as an explicit "no
-// issues found" rather than an empty comment. Uses reviewMarker, not
-// marker, so this comment's idempotency never collides with a
-// CI-failure comment on the same commit.
-func RenderReviewFindings(findings []provider.Assessment, sha string) string {
-	var b strings.Builder
-	b.WriteString("### 🤖 AI PR Review\n\n")
-
-	if len(findings) == 0 {
-		b.WriteString("No issues found in this diff.\n")
-	} else {
-		for i, f := range findings {
-			if i > 0 {
-				b.WriteString("\n---\n")
-			}
-			b.WriteString(renderFinding(f, false))
+// bucketFindings splits findings into inline review comments (anchored
+// findings, full detail) and summary bullets (everything else: unanchored
+// findings, or every finding when allowAnchors is false because the PR's
+// head moved since context was gathered).
+func bucketFindings(findings []provider.Assessment, allowAnchors bool) (bullets []string, comments []ReviewComment, counts severityCounts) {
+	for _, f := range findings {
+		emoji := severityEmoji(f.Severity)
+		switch emoji {
+		case "🔴":
+			counts.critical++
+		case "🟡":
+			counts.warning++
+		default:
+			counts.nit++
 		}
-	}
 
-	b.WriteString("\n")
-	b.WriteString(reviewMarker(sha))
+		if allowAnchors && f.Anchored && f.File != "" {
+			comments = append(comments, ReviewComment{Path: f.File, Line: f.Line, Body: inlineCommentBody(f, emoji)})
+			bullets = append(bullets, fmt.Sprintf("%s `%s:%d` %s — see inline comment", emoji, f.File, f.Line, f.Category))
+			continue
+		}
+
+		loc := "unanchored"
+		if f.File != "" {
+			loc = fmt.Sprintf("`%s`", f.File)
+		}
+		bullets = append(bullets, fmt.Sprintf("%s %s (%s) — %s", emoji, f.Category, loc, orNone(f.Comment)))
+	}
+	return
+}
+
+func inlineCommentBody(a provider.Assessment, emoji string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s **%s** · %s · %s confidence\n\n", emoji, a.Category, a.Severity, a.Confidence)
+	b.WriteString(orNone(a.Comment))
+	if strings.TrimSpace(a.SuggestedFix) != "" {
+		fmt.Fprintf(&b, "\n\n**Suggested fix:** %s", a.SuggestedFix)
+	}
 	return b.String()
 }
 
 // RenderReviewFallback is RenderFallback's counterpart for the review
-// path — there's no CI run/raw-logs link to point to here, so the
-// message just names the outage.
+// path -- there's no CI run/raw-logs link to point to here, so the
+// message just names the outage. No findings exist in this degrade case,
+// so callers pass nil comments alongside this string.
 func RenderReviewFallback(sha string) string {
 	var b strings.Builder
 	b.WriteString("### 🤖 AI PR Review\n\n")
@@ -131,36 +186,36 @@ func RenderReviewFallback(sha string) string {
 }
 
 // RenderReviewMinimal is RenderMinimal's counterpart for the review path,
-// using reviewMarker so the comment is found by PostReview's idempotency
+// using reviewMarker so the review is found by PostReview's idempotency
 // check rather than Post's.
 func RenderReviewMinimal(reason, sha string) string {
 	var b strings.Builder
 	b.WriteString("### 🤖 AI PR Review\n\n")
-	b.WriteString(fmt.Sprintf("Unable to produce a full review for this PR: %s\n\n", reason))
+	fmt.Fprintf(&b, "Unable to produce a full review for this PR: %s\n\n", reason)
 	b.WriteString(reviewMarker(sha))
 	return b.String()
 }
 
 // RenderFallback covers §7's "LLM provider unavailable or times out":
-// post a fallback comment linking the raw logs and exit non-fatally.
+// post a fallback review body linking the raw logs and exit non-fatally.
 func RenderFallback(runHTMLURL, sha string) string {
 	var b strings.Builder
 	b.WriteString("### 🤖 AI CI Agent\n\n")
 	b.WriteString("The LLM provider was unavailable or timed out, so no automated investigation could be generated for this failure.\n\n")
 	if runHTMLURL != "" {
-		b.WriteString(fmt.Sprintf("Raw logs: %s\n\n", runHTMLURL))
+		fmt.Fprintf(&b, "Raw logs: %s\n\n", runHTMLURL)
 	}
 	b.WriteString(marker(sha))
 	return b.String()
 }
 
 // RenderMinimal covers the other §7 fallback paths: rate limiting
-// exhausted, or the assessment stayed malformed after the bounded
-// repair attempt. reason is a short, human-readable explanation.
+// exhausted, or the assessment stayed malformed after the bounded repair
+// attempt. reason is a short, human-readable explanation.
 func RenderMinimal(reason, sha string) string {
 	var b strings.Builder
 	b.WriteString("### 🤖 AI CI Agent\n\n")
-	b.WriteString(fmt.Sprintf("Unable to produce a full investigation for this failure: %s\n\n", reason))
+	fmt.Fprintf(&b, "Unable to produce a full investigation for this failure: %s\n\n", reason)
 	b.WriteString(marker(sha))
 	return b.String()
 }

@@ -19,22 +19,31 @@ func testClient(server *httptest.Server) *ghclient.Client {
 	return c
 }
 
-func TestPost_CreatesCommentWhenNoneExists(t *testing.T) {
+func TestPost_CreatesReviewWhenNoneExists(t *testing.T) {
 	var listCalls, createCalls int
 	mux := http.NewServeMux()
-	mux.HandleFunc("/repos/acme/widgets/issues/1/comments", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/repos/acme/widgets/pulls/1/reviews", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			listCalls++
 			json.NewEncoder(w).Encode([]map[string]any{
-				{"id": 1, "body": "an unrelated human comment", "html_url": "https://x/1"},
+				{"id": 1, "body": "an unrelated human review", "html_url": "https://x/1"},
 			})
 		case http.MethodPost:
 			createCalls++
-			var in map[string]string
+			var in reviewRequest
 			json.NewDecoder(r.Body).Decode(&in)
-			if !strings.Contains(in["body"], marker("abc1234")) {
-				t.Errorf("posted body should embed the marker for its SHA, got: %s", in["body"])
+			if !strings.Contains(in.Body, marker("abc1234")) {
+				t.Errorf("posted review body should embed the marker for its SHA, got: %s", in.Body)
+			}
+			if in.Event != "COMMENT" {
+				t.Errorf("Event = %q, want COMMENT -- this agent never blocks or approves", in.Event)
+			}
+			if in.CommitID != "abc1234" {
+				t.Errorf("CommitID = %q, want abc1234", in.CommitID)
+			}
+			if len(in.Comments) != 1 || in.Comments[0].Path != "a.go" || in.Comments[0].Line != 5 || in.Comments[0].Side != "RIGHT" {
+				t.Errorf("Comments = %+v, want one inline comment at a.go:5 on the RIGHT side", in.Comments)
 			}
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(map[string]any{"id": 2, "html_url": "https://x/2"})
@@ -43,7 +52,8 @@ func TestPost_CreatesCommentWhenNoneExists(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	url, alreadyPosted, err := Post(context.Background(), testClient(server), 1, "abc1234", "some body "+marker("abc1234"))
+	comments := []ReviewComment{{Path: "a.go", Line: 5, Body: "finding body"}}
+	url, alreadyPosted, err := Post(context.Background(), testClient(server), 1, "abc1234", "summary "+marker("abc1234"), comments)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -61,7 +71,7 @@ func TestPost_CreatesCommentWhenNoneExists(t *testing.T) {
 func TestPost_ReturnsExistingWithoutDuplicating(t *testing.T) {
 	var listCalls, createCalls int
 	mux := http.NewServeMux()
-	mux.HandleFunc("/repos/acme/widgets/issues/1/comments", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/repos/acme/widgets/pulls/1/reviews", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			listCalls++
@@ -70,38 +80,38 @@ func TestPost_ReturnsExistingWithoutDuplicating(t *testing.T) {
 			})
 		case http.MethodPost:
 			createCalls++
-			t.Error("should not create a duplicate comment when one already carries the marker")
+			t.Error("should not create a duplicate review when one already carries the marker")
 		}
 	})
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	url, alreadyPosted, err := Post(context.Background(), testClient(server), 1, "abc1234", "new body "+marker("abc1234"))
+	url, alreadyPosted, err := Post(context.Background(), testClient(server), 1, "abc1234", "new summary "+marker("abc1234"), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !alreadyPosted {
-		t.Error("expected alreadyPosted=true when a marker comment already exists")
+		t.Error("expected alreadyPosted=true when a marker review already exists")
 	}
 	if url != "https://x/existing" {
-		t.Errorf("url = %q, want the existing comment's URL", url)
+		t.Errorf("url = %q, want the existing review's URL", url)
 	}
 	if createCalls != 0 {
 		t.Errorf("expected 0 create calls, got %d", createCalls)
 	}
 }
 
-// A CI-failure comment already posted for this SHA must not make
-// PostReview think a review comment already exists too (and vice
+// A CI-failure review already posted for this SHA must not make
+// PostReview think a plain-review review already exists too (and vice
 // versa) — they're independent idempotency lookups sharing a PR.
 func TestPostReview_DoesNotCollideWithCIFailureMarker(t *testing.T) {
 	var createCalls int
 	mux := http.NewServeMux()
-	mux.HandleFunc("/repos/acme/widgets/issues/1/comments", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/repos/acme/widgets/pulls/1/reviews", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			json.NewEncoder(w).Encode([]map[string]any{
-				{"id": 1, "body": "CI failure comment " + marker("abc1234"), "html_url": "https://x/1"},
+				{"id": 1, "body": "CI failure review " + marker("abc1234"), "html_url": "https://x/1"},
 			})
 		case http.MethodPost:
 			createCalls++
@@ -112,7 +122,7 @@ func TestPostReview_DoesNotCollideWithCIFailureMarker(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	url, alreadyPosted, err := PostReview(context.Background(), testClient(server), 1, "abc1234", "review body "+reviewMarker("abc1234"))
+	url, alreadyPosted, err := PostReview(context.Background(), testClient(server), 1, "abc1234", "review summary "+reviewMarker("abc1234"), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -120,7 +130,7 @@ func TestPostReview_DoesNotCollideWithCIFailureMarker(t *testing.T) {
 		t.Error("PostReview must not see the CI-failure marker as its own")
 	}
 	if url != "https://x/review" {
-		t.Errorf("url = %q, want the newly created review comment's URL", url)
+		t.Errorf("url = %q, want the newly created review's URL", url)
 	}
 	if createCalls != 1 {
 		t.Errorf("expected exactly 1 create call, got %d", createCalls)
@@ -129,7 +139,7 @@ func TestPostReview_DoesNotCollideWithCIFailureMarker(t *testing.T) {
 
 func TestExists_TrueOnlyForMatchingSHA(t *testing.T) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/repos/acme/widgets/issues/1/comments", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/repos/acme/widgets/pulls/1/reviews", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode([]map[string]any{
 			{"id": 1, "body": "posted for a different commit " + marker("def5678")},
 		})

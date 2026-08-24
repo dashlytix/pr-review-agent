@@ -7,100 +7,80 @@ import (
 	"github.com/dimension/ai-ci-agent/internal/provider"
 )
 
-func TestRenderAssessments_IncludesMarkerForSHA(t *testing.T) {
+func TestRenderAssessmentReview_DiagnosisIsSummaryLeadNotInlineComment(t *testing.T) {
 	findings := []provider.Assessment{{
 		File: "vehicles/garage.go", Line: 41, Category: "ci-failure",
 		Severity: "P1", Comment: "nil owner check", SuggestedFix: "check g == nil first",
 		Confidence: "high", Anchored: true,
 	}}
 
-	body := RenderAssessments(findings, "abc1234", "")
+	summary, comments := RenderAssessmentReview(findings, "abc1234", "")
 
-	if !strings.Contains(body, marker("abc1234")) {
-		t.Error("rendered comment must embed the marker for its own SHA, for §6.3 idempotency lookup")
+	if !strings.Contains(summary, marker("abc1234")) {
+		t.Error("summary must embed the marker for its own SHA, for §6.3 idempotency lookup")
 	}
-	if !strings.Contains(body, "vehicles/garage.go:41") {
-		t.Errorf("expected an inline anchor for an anchored finding, got:\n%s", body)
+	if !strings.Contains(summary, "nil owner check") || !strings.Contains(summary, "🔴") {
+		t.Errorf("expected the ci-failure diagnosis (with its severity emoji) in the summary, got:\n%s", summary)
 	}
-	if !strings.Contains(body, "P1") || !strings.Contains(body, "high") {
-		t.Errorf("expected severity and confidence to be rendered, got:\n%s", body)
-	}
-}
-
-func TestRenderAssessments_UnanchoredOmitsLineNumber(t *testing.T) {
-	findings := []provider.Assessment{{
-		File: "vehicles/garage.go", Line: 999, Category: "ci-failure",
-		Severity: "P1", Comment: "unclear", Confidence: "low", Anchored: false,
-	}}
-
-	body := RenderAssessments(findings, "abc1234", "")
-
-	if strings.Contains(body, "vehicles/garage.go:999") {
-		t.Errorf("an unanchored finding must not be rendered as a precise file:line anchor, got:\n%s", body)
-	}
-	if !strings.Contains(body, "vehicles/garage.go") {
-		t.Errorf("the file should still be mentioned even when unanchored, got:\n%s", body)
+	if len(comments) != 0 {
+		t.Errorf("the mandatory ci-failure finding must never become an inline comment, got %+v", comments)
 	}
 }
 
-func TestRenderAssessments_StaleHeadDropsAnchorAndNotes(t *testing.T) {
-	findings := []provider.Assessment{{
-		File: "vehicles/garage.go", Line: 41, Category: "ci-failure",
-		Severity: "P1", Comment: "nil owner check", Confidence: "high", Anchored: true,
-	}}
-
-	body := RenderAssessments(findings, "abc1234", "def5678")
-
-	if strings.Contains(body, "vehicles/garage.go:41") {
-		t.Errorf("§6.3: a stale-head comment must not carry a precise inline anchor, got:\n%s", body)
-	}
-	if !strings.Contains(body, "abc1234") || !strings.Contains(body, "def5678") {
-		t.Errorf("expected both the reviewed and current SHA to be called out, got:\n%s", body)
-	}
-	if !strings.Contains(body, marker("abc1234")) {
-		t.Error("the marker must still key off the reviewed SHA, not the current head, so idempotency lookup for this run still works")
-	}
-}
-
-func TestRenderAssessments_RendersAdditionalFindings(t *testing.T) {
+func TestRenderAssessmentReview_AnchoredExtraFindingBecomesInlineComment(t *testing.T) {
 	findings := []provider.Assessment{
-		{
-			File: "vehicles/garage.go", Line: 41, Category: "ci-failure",
-			Severity: "P1", Comment: "nil owner check", Confidence: "high", Anchored: true,
-		},
-		{
-			File: "vehicles/other.go", Line: 7, Category: "security",
-			Severity: "P0", Comment: "a hardcoded credential", Confidence: "medium", Anchored: true,
-		},
+		{File: "vehicles/garage.go", Line: 41, Category: "ci-failure", Severity: "P1", Comment: "nil owner check", Confidence: "high", Anchored: true},
+		{File: "vehicles/other.go", Line: 7, Category: "security", Severity: "P0", Comment: "a hardcoded credential", Confidence: "medium", Anchored: true},
 	}
 
-	body := RenderAssessments(findings, "abc1234", "")
+	summary, comments := RenderAssessmentReview(findings, "abc1234", "")
 
-	if !strings.Contains(body, "vehicles/garage.go:41") {
-		t.Errorf("primary ci-failure finding should still render, got:\n%s", body)
+	if len(comments) != 1 {
+		t.Fatalf("len(comments) = %d, want 1", len(comments))
 	}
-	if !strings.Contains(body, "vehicles/other.go:7") || !strings.Contains(body, "hardcoded credential") {
-		t.Errorf("expected the additional security finding to be rendered, got:\n%s", body)
+	if comments[0].Path != "vehicles/other.go" || comments[0].Line != 7 {
+		t.Errorf("comment = %+v, want it anchored at vehicles/other.go:7", comments[0])
 	}
-	if !strings.Contains(body, "Other findings") {
-		t.Errorf("expected an 'Other findings' section when there's more than the ci-failure finding, got:\n%s", body)
+	if !strings.Contains(comments[0].Body, "hardcoded credential") || !strings.Contains(comments[0].Body, "🔴") {
+		t.Errorf("comment body = %q, want the finding's text and its severity emoji", comments[0].Body)
 	}
-	// exactly one marker, still keyed to one comment for both findings
-	if strings.Count(body, "ai-ci-agent:marker") != 1 {
-		t.Errorf("expected exactly one marker for the whole comment regardless of finding count, got:\n%s", body)
+	if !strings.Contains(summary, "🔴 1 critical") {
+		t.Errorf("summary = %q, want a severity count line for the extra finding", summary)
 	}
 }
 
-func TestRenderAssessments_SingleFindingOmitsOtherSection(t *testing.T) {
-	findings := []provider.Assessment{{
-		File: "a.go", Line: 1, Category: "ci-failure",
-		Severity: "P1", Comment: "x", Confidence: "high", Anchored: true,
-	}}
+func TestRenderAssessmentReview_UnanchoredFindingStaysInSummaryOnly(t *testing.T) {
+	findings := []provider.Assessment{
+		{File: "a.go", Line: 1, Category: "ci-failure", Severity: "P1", Comment: "x", Confidence: "high", Anchored: true},
+		{File: "vehicles/garage.go", Line: 999, Category: "style", Severity: "nit", Comment: "unclear naming", Confidence: "low", Anchored: false},
+	}
 
-	body := RenderAssessments(findings, "abc1234", "")
+	summary, comments := RenderAssessmentReview(findings, "abc1234", "")
 
-	if strings.Contains(body, "Other findings") {
-		t.Errorf("a single ci-failure finding should not render an empty 'Other findings' section, got:\n%s", body)
+	if len(comments) != 0 {
+		t.Errorf("an unanchored finding must never become an inline comment, got %+v", comments)
+	}
+	if !strings.Contains(summary, "unclear naming") {
+		t.Errorf("an unanchored finding must still be visible somewhere in the summary, got:\n%s", summary)
+	}
+}
+
+func TestRenderAssessmentReview_StaleHeadDropsAllAnchorsAndNotesBothSHAs(t *testing.T) {
+	findings := []provider.Assessment{
+		{File: "a.go", Line: 1, Category: "ci-failure", Severity: "P1", Comment: "x", Confidence: "high", Anchored: true},
+		{File: "vehicles/garage.go", Line: 41, Category: "security", Severity: "P0", Comment: "nil owner check", Confidence: "high", Anchored: true},
+	}
+
+	summary, comments := RenderAssessmentReview(findings, "abc1234", "def5678")
+
+	if len(comments) != 0 {
+		t.Errorf("§6.3: a stale-head run must post zero inline comments, got %+v", comments)
+	}
+	if !strings.Contains(summary, "abc1234") || !strings.Contains(summary, "def5678") {
+		t.Errorf("expected both the reviewed and current SHA to be called out, got:\n%s", summary)
+	}
+	if !strings.Contains(summary, marker("abc1234")) {
+		t.Error("the marker must still key off the reviewed SHA, not the current head")
 	}
 }
 
@@ -126,47 +106,56 @@ func TestRenderMinimal_IncludesReasonAndMarker(t *testing.T) {
 	}
 }
 
-func TestRenderReviewFindings_NoIssuesSaysSo(t *testing.T) {
-	body := RenderReviewFindings(nil, "abc1234")
+func TestRenderReviewReview_NoIssuesSaysSo(t *testing.T) {
+	summary, comments := RenderReviewReview(nil, "abc1234")
 
-	if !strings.Contains(body, "No issues found") {
-		t.Errorf("expected an explicit no-issues message for an empty findings slice, got:\n%s", body)
+	if !strings.Contains(summary, "No issues found") {
+		t.Errorf("expected an explicit no-issues message for an empty findings slice, got:\n%s", summary)
 	}
-	if !strings.Contains(body, reviewMarker("abc1234")) {
+	if !strings.Contains(summary, reviewMarker("abc1234")) {
 		t.Error("expected the review marker to be embedded even when there are no findings")
+	}
+	if len(comments) != 0 {
+		t.Errorf("no findings means no inline comments, got %+v", comments)
 	}
 }
 
-func TestRenderReviewFindings_RendersEachFinding(t *testing.T) {
+func TestRenderReviewReview_AnchoredFindingsBecomeInlineComments(t *testing.T) {
 	findings := []provider.Assessment{
 		{File: "a.go", Line: 1, Category: "correctness", Severity: "P2", Comment: "off-by-one", Confidence: "medium", Anchored: true},
 		{File: "b.go", Line: 7, Category: "security", Severity: "P0", Comment: "a hardcoded credential", Confidence: "high", Anchored: true},
 	}
 
-	body := RenderReviewFindings(findings, "abc1234")
+	summary, comments := RenderReviewReview(findings, "abc1234")
 
-	if !strings.Contains(body, "a.go:1") || !strings.Contains(body, "off-by-one") {
-		t.Errorf("expected the first finding to render, got:\n%s", body)
+	if len(comments) != 2 {
+		t.Fatalf("len(comments) = %d, want 2", len(comments))
 	}
-	if !strings.Contains(body, "b.go:7") || !strings.Contains(body, "hardcoded credential") {
-		t.Errorf("expected the second finding to render, got:\n%s", body)
+	if comments[0].Path != "a.go" || comments[0].Line != 1 || !strings.Contains(comments[0].Body, "off-by-one") {
+		t.Errorf("comments[0] = %+v, want it anchored at a.go:1 with the off-by-one text", comments[0])
+	}
+	if comments[1].Path != "b.go" || comments[1].Line != 7 || !strings.Contains(comments[1].Body, "hardcoded credential") {
+		t.Errorf("comments[1] = %+v, want it anchored at b.go:7 with the credential text", comments[1])
+	}
+	if !strings.Contains(summary, "🔴 1 critical") || !strings.Contains(summary, "🟡 1 warning") {
+		t.Errorf("summary = %q, want severity counts for both findings", summary)
 	}
 }
 
-// A CI-failure comment (marker) and a review comment (reviewMarker) on
-// the same commit SHA must not collide in findByMarker's substring
-// search, or one path's idempotency check would wrongly report the
-// other's comment as already posted.
+// A CI-failure review (marker) and a plain-review review (reviewMarker)
+// on the same commit SHA must not collide in findReviewByMarker's
+// substring search, or one path's idempotency check would wrongly report
+// the other's review as already posted.
 func TestMarkerAndReviewMarker_NeverCollide(t *testing.T) {
 	sha := "abc1234"
 	ciBody := RenderFallback("", sha)
 	reviewBody := RenderReviewFallback(sha)
 
 	if strings.Contains(ciBody, reviewMarker(sha)) {
-		t.Error("a CI-failure comment must not embed the review marker")
+		t.Error("a CI-failure review must not embed the review marker")
 	}
 	if strings.Contains(reviewBody, marker(sha)) {
-		t.Error("a review comment must not embed the CI-failure marker")
+		t.Error("a plain-review review must not embed the CI-failure marker")
 	}
 }
 
@@ -176,5 +165,18 @@ func TestMarker_DiffersBySHA(t *testing.T) {
 	}
 	if marker("abc1234") != marker("abc1234") {
 		t.Error("marker must be deterministic for the same SHA")
+	}
+}
+
+func TestSeverityEmoji(t *testing.T) {
+	tests := []struct{ severity, want string }{
+		{"P0", "🔴"}, {"P1", "🔴"},
+		{"P2", "🟡"}, {"P3", "🟡"},
+		{"nit", "🟢"}, {"", "🟢"},
+	}
+	for _, tt := range tests {
+		if got := severityEmoji(tt.severity); got != tt.want {
+			t.Errorf("severityEmoji(%q) = %q, want %q", tt.severity, got, tt.want)
+		}
 	}
 }
