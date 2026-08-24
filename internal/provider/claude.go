@@ -123,8 +123,14 @@ func (p *ClaudeProvider) Review(ctx context.Context, req AssessmentRequest) ([]A
 	// more to think through than the bounded CI-failure context Assess
 	// sends, so this budget is bigger than Assess's 3072 -- too small a
 	// budget here means the model can burn it all on the "thinking" block
-	// and return no text at all (observed against a real 1600+ line PR).
-	raw, err := p.complete(ctx, assess.ReviewSystemPrompt, prompt, 8192)
+	// and return no text at all (first observed against a real 1600+ line
+	// PR, which is what motivated raising this from 3072 to 8192). Raised
+	// again to 16384 after the same "response contained no text blocks"
+	// failure recurred against a 386-line PR -- small enough that this
+	// isn't purely a diff-size problem; thinking-token usage varies enough
+	// on its own that even a moderate diff can exhaust 8192 before any
+	// text comes out.
+	raw, err := p.complete(ctx, assess.ReviewSystemPrompt, prompt, 16384)
 	if err != nil {
 		return nil, fmt.Errorf("claude: review call failed: %w", err)
 	}
