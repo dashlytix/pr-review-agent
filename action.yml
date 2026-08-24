@@ -15,9 +15,6 @@ inputs:
     default: '${{ github.token }}'
   slack-webhook-url:
     description: 'Slack incoming webhook URL. If unset, Slack notifications are disabled entirely.'
-  prod-branch:
-    description: 'Base branch that marks a merged PR as "merged to prod" in the Slack notification'
-    default: 'main'
 outputs:
   comment-url:
     description: 'URL of the PR comment this run posted (or found already existing)'
