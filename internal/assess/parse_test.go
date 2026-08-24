@@ -126,45 +126,55 @@ func TestErrMalformed_SurvivesWrapping(t *testing.T) {
 	}
 }
 
-func TestParseReviewAssessments_EmptyArrayIsValid(t *testing.T) {
-	findings, err := ParseReviewAssessments("[]")
+func TestParseReview_EmptyFindingsArrayIsValid(t *testing.T) {
+	result, err := ParseReview(`{"summary":"Adds a health-check endpoint.","findings":[]}`)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(findings) != 0 {
-		t.Errorf("expected 0 findings, got %d", len(findings))
+	if len(result.Findings) != 0 {
+		t.Errorf("expected 0 findings, got %d", len(result.Findings))
+	}
+	if result.Summary != "Adds a health-check endpoint." {
+		t.Errorf("Summary = %q, want it preserved", result.Summary)
 	}
 }
 
-func TestParseReviewAssessments_ValidFinding(t *testing.T) {
-	raw := `[{"file":"a.go","line":1,"category":"correctness","severity":"P2","comment":"off-by-one","suggested_fix":"use <=","confidence":"medium","anchored":true}]`
+func TestParseReview_ValidFinding(t *testing.T) {
+	raw := `{"summary":"Fixes an off-by-one in the pagination helper.","findings":[{"file":"a.go","line":1,"category":"correctness","severity":"P2","comment":"off-by-one","suggested_fix":"use <=","confidence":"medium","anchored":true}]}`
 
-	findings, err := ParseReviewAssessments(raw)
+	result, err := ParseReview(raw)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(findings) != 1 || findings[0].Category != "correctness" {
-		t.Errorf("got %+v", findings)
+	if len(result.Findings) != 1 || result.Findings[0].Category != "correctness" {
+		t.Errorf("got %+v", result.Findings)
 	}
 }
 
-func TestParseReviewAssessments_RejectsCIFailureCategory(t *testing.T) {
-	raw := `[{"file":"a.go","line":1,"category":"ci-failure","severity":"P1","comment":"x","suggested_fix":"","confidence":"low","anchored":false}]`
-	if _, err := ParseReviewAssessments(raw); err == nil {
+func TestParseReview_MissingSummaryIsInvalid(t *testing.T) {
+	raw := `{"findings":[]}`
+	if _, err := ParseReview(raw); err == nil {
+		t.Fatal("expected an error when summary is missing -- it's mandatory, not derivable from an empty findings list")
+	}
+}
+
+func TestParseReview_RejectsCIFailureCategory(t *testing.T) {
+	raw := `{"summary":"x","findings":[{"file":"a.go","line":1,"category":"ci-failure","severity":"P1","comment":"x","suggested_fix":"","confidence":"low","anchored":false}]}`
+	if _, err := ParseReview(raw); err == nil {
 		t.Fatal("expected an error for a ci-failure category in the review path — there's no CI failure to diagnose here")
 	}
 }
 
-func TestParseReviewAssessments_InvalidCategory(t *testing.T) {
-	raw := `[{"file":"a.go","line":1,"category":"performance-nonsense","severity":"P1","comment":"x","suggested_fix":"","confidence":"low","anchored":false}]`
-	if _, err := ParseReviewAssessments(raw); err == nil {
+func TestParseReview_InvalidCategory(t *testing.T) {
+	raw := `{"summary":"x","findings":[{"file":"a.go","line":1,"category":"performance-nonsense","severity":"P1","comment":"x","suggested_fix":"","confidence":"low","anchored":false}]}`
+	if _, err := ParseReview(raw); err == nil {
 		t.Fatal("expected an error for an out-of-enum category")
 	}
 }
 
-func TestParseReviewAssessments_NoJSONFound(t *testing.T) {
-	if _, err := ParseReviewAssessments("I couldn't figure this one out, sorry."); err == nil {
-		t.Fatal("expected an error when no JSON array is present")
+func TestParseReview_NoJSONFound(t *testing.T) {
+	if _, err := ParseReview("I couldn't figure this one out, sorry."); err == nil {
+		t.Fatal("expected an error when no JSON object is present")
 	}
 }
 

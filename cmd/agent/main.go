@@ -291,8 +291,16 @@ func investigate(ctx context.Context, client *ghclient.Client, llmProvider provi
 		// and skipped (with a re-post never re-attempted) once already
 		// posted, so a reconcile pass never double-pings Slack.
 		if metaErr == nil {
+			// Degrade cases (assessErr != nil) never produced structured
+			// findings to bucket, so the card omits the Impact field
+			// entirely rather than claiming a verdict it doesn't have.
+			var impactEmoji, impactLabel string
+			if assessErr == nil {
+				impactEmoji, impactLabel = post.OverallImpact(findings)
+			}
 			msg := notify.RenderCIFailurePosted(
 				notify.PullRequest{Number: result.PRNumber, Repo: repo, HTMLURL: meta.HTMLURL, Author: meta.User.Login},
+				impactEmoji, impactLabel,
 			)
 			if err := notify.Send(ctx, slackWebhookURL, msg); err != nil {
 				log.Printf("warning: slack notification failed: %v", err)
@@ -316,13 +324,13 @@ func investigate(ctx context.Context, client *ghclient.Client, llmProvider provi
 func reviewPR(ctx context.Context, client *ghclient.Client, llmProvider provider.Provider, prNumber int, headSHA string) error {
 	req, gatherErr := gather.GatherForReview(ctx, client, prNumber)
 
-	var findings []provider.Assessment
+	var result provider.ReviewResult
 	assessErr := gatherErr
 	if gatherErr == nil {
-		findings, assessErr = llmProvider.Review(ctx, req)
+		result, assessErr = llmProvider.Review(ctx, req)
 	}
 
-	summary, comments := renderReviewSummary(assessErr, findings, headSHA)
+	summary, comments := renderReviewSummary(assessErr, result, headSHA)
 
 	url, alreadyPosted, err := post.PostReview(ctx, client, prNumber, headSHA, summary, comments)
 	if err != nil {
@@ -340,10 +348,10 @@ func reviewPR(ctx context.Context, client *ghclient.Client, llmProvider provider
 // renderReviewSummary is renderReview's counterpart for the review path:
 // the same §7 degrade-gracefully cases, minus the fallback's raw-logs
 // link (there's no CI run here to link to).
-func renderReviewSummary(assessErr error, findings []provider.Assessment, headSHA string) (string, []post.ReviewComment) {
+func renderReviewSummary(assessErr error, result provider.ReviewResult, headSHA string) (string, []post.ReviewComment) {
 	switch {
 	case assessErr == nil:
-		return post.RenderReviewReview(findings, headSHA)
+		return post.RenderReviewReview(result, headSHA)
 
 	case errors.Is(assessErr, assess.ErrMalformed):
 		log.Printf("review malformed after repair attempt: %v", assessErr)

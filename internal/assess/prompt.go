@@ -55,16 +55,24 @@ It is not valid JSON, or does not match that shape. Extract the intended meaning
 
 // ReviewSystemPrompt drives the plain PR-review path (the pull_request
 // opened/synchronize trigger), independent of any CI outcome — there is
-// no CI log to diagnose, so unlike SystemPrompt no category is
+// no CI log to diagnose, so unlike SystemPrompt no finding category is
 // mandatory. Findings reuse the same schema as SystemPrompt per §4.4
-// rather than a parallel one, minus "ci-failure" itself.
+// rather than a parallel one, minus "ci-failure" itself. Unlike
+// SystemPrompt's bare array, the response here is a JSON object: a
+// mandatory "summary" describing the PR itself alongside the "findings"
+// array, generated together so this stays one call rather than two.
 const ReviewSystemPrompt = `You are an AI code reviewer. You are given a pull request's diff and the contents/patches of the files it touches. You never suggest merging, re-running jobs, or applying fixes yourself — you only explain findings for a human to act on.
 
 The change is expected to be in one of: Go, Rust, TypeScript, or SQL, but reason from the evidence in front of you rather than assuming.
 
-Respond with a single JSON array and nothing else — no prose before or after, no markdown code fence. The array holds zero or more findings, one per real issue you notice. Do not manufacture findings to pad the list — an empty array ("[]") is the correct, and common, response when the diff has no issues worth flagging.
+Respond with a single JSON object and nothing else — no prose before or after, no markdown code fence. The object must have exactly these two top-level fields:
 
-Each array element must have exactly these fields:
+{
+  "summary": string,  // 2-4 sentences, plain language, describing what this PR actually does -- its scope, intent, and the key files/areas touched. Written the way a human reviewer opens a review. Describe the change itself; do not restate or summarize the findings below.
+  "findings": array   // zero or more findings, one per real issue you notice. Do not manufacture findings to pad the list -- an empty array is the correct, and common, response when the diff has no issues worth flagging.
+}
+
+Each element of "findings" must have exactly these fields:
 
 {
   "file": string,           // path the finding applies to; "" if none is identifiable
@@ -79,15 +87,15 @@ Each array element must have exactly these fields:
 
 // ReviewRepairSystemPrompt is ReviewSystemPrompt's counterpart to
 // RepairSystemPrompt: the single bounded reformat attempt (§7) for the
-// review path, where an empty array is a valid recovered result rather
-// than something to avoid.
-const ReviewRepairSystemPrompt = `The following text was supposed to be a single JSON array of findings, each matching this exact shape:
+// review path, where an empty "findings" array is a valid recovered
+// result rather than something to avoid.
+const ReviewRepairSystemPrompt = `The following text was supposed to be a single JSON object matching this exact shape:
 
-{"file": string, "line": integer, "category": "correctness"|"security"|"style"|"performance", "severity": "P0"|"P1"|"P2"|"P3"|"nit", "comment": string, "suggested_fix": string, "confidence": "high"|"medium"|"low", "anchored": boolean}
+{"summary": string, "findings": [{"file": string, "line": integer, "category": "correctness"|"security"|"style"|"performance", "severity": "P0"|"P1"|"P2"|"P3"|"nit", "comment": string, "suggested_fix": string, "confidence": "high"|"medium"|"low", "anchored": boolean}, ...]}
 
-An empty array ("[]") is valid and means no issues were found.
+An empty "findings" array is valid and means no issues were found. "summary" is mandatory -- a 2-4 sentence plain-language description of what the PR does.
 
-It is not valid JSON, or does not match that shape. Extract the intended meaning and re-emit it as exactly one valid JSON array matching that shape — no prose, no markdown fence, nothing else. If a field cannot be recovered, use "" for strings, 0 for line, and false for anchored. If you cannot recover any findings at all, emit an empty array.`
+It is not valid JSON, or does not match that shape. Extract the intended meaning and re-emit it as exactly one valid JSON object matching that shape — no prose, no markdown fence, nothing else. If "summary" cannot be recovered, write your own best-effort 2-4 sentence description from whatever diff context appears in the text below. For findings, if a field cannot be recovered, use "" for strings, 0 for line, and false for anchored. If no findings can be recovered at all, emit an empty "findings" array.`
 
 // BuildPrompt renders the user-turn prompt from gathered CI context.
 func BuildPrompt(req AssessmentRequest) string {

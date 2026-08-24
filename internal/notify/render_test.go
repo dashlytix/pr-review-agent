@@ -179,7 +179,7 @@ func TestRenderMerged_OmitsCommitFieldForOtherEvents(t *testing.T) {
 
 func TestRenderCIFailurePosted_HasOrangeBorderAndNoDiagnosisText(t *testing.T) {
 	pr := PullRequest{Number: 5, Repo: "widgets", HTMLURL: "https://github.com/o/r/pull/5", Author: "erin"}
-	msg := RenderCIFailurePosted(pr)
+	msg := RenderCIFailurePosted(pr, "", "")
 
 	if msg.Attachments[0].Color != colorCIFailed {
 		t.Errorf("Color = %q, want %q", msg.Attachments[0].Color, colorCIFailed)
@@ -190,18 +190,35 @@ func TestRenderCIFailurePosted_HasOrangeBorderAndNoDiagnosisText(t *testing.T) {
 			t.Errorf("RenderCIFailurePosted() = %s, want it to contain %q", got, want)
 		}
 	}
+	if strings.Contains(string(got), "Impact") {
+		t.Errorf("RenderCIFailurePosted() with empty impact = %s, want no Impact field", got)
+	}
 }
 
-// None of the four lifecycle notifications should ever carry review
-// content -- findings, severity badges, or diagnosis text stay in the
-// GitHub PR comment, not Slack.
+func TestRenderCIFailurePosted_WithImpactAddsField(t *testing.T) {
+	pr := PullRequest{Number: 5, Repo: "widgets", HTMLURL: "https://github.com/o/r/pull/5", Author: "erin"}
+	got, _ := json.Marshal(RenderCIFailurePosted(pr, "🟡", "Warning"))
+	for _, want := range []string{"Impact", "🟡", "Warning"} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("RenderCIFailurePosted() = %s, want it to contain %q", got, want)
+		}
+	}
+}
+
+// None of the four lifecycle notifications should ever carry findings or
+// diagnosis text -- that stays in the GitHub PR comment, not Slack. The
+// CI-failed card is a deliberate, narrow exception: it may carry a
+// single derived Overall-impact verdict (see TestRenderCIFailurePosted_
+// WithImpactAddsField), but never full finding detail -- tested here
+// with an empty impact so this check still catches any regression that
+// leaks real findings text into the card.
 func TestLifecycleNotifications_NeverCarryReviewContent(t *testing.T) {
 	pr := PullRequest{Number: 6, Repo: "widgets", HTMLURL: "https://github.com/o/r/pull/6", Author: "frank", BaseRef: "main", HeadSHA: "abc1234"}
 	for name, msg := range map[string]SlackAttachmentMessage{
 		"opened":     RenderOpened(pr),
 		"closed":     RenderClosed(pr),
 		"merged":     RenderMerged(pr),
-		"ci-failure": RenderCIFailurePosted(pr),
+		"ci-failure": RenderCIFailurePosted(pr, "", ""),
 	} {
 		if len(msg.Attachments) != 1 || len(msg.Attachments[0].Blocks) != 3 {
 			t.Errorf("%s: expected exactly 1 attachment with 3 blocks (header, fields, button), got %+v", name, msg)

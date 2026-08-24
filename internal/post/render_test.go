@@ -107,8 +107,15 @@ func TestRenderMinimal_IncludesReasonAndNoMarker(t *testing.T) {
 }
 
 func TestRenderReviewReview_NoIssuesSaysSo(t *testing.T) {
-	summary, comments := RenderReviewReview(nil, "abc1234")
+	result := provider.ReviewResult{Summary: "Adds a health-check endpoint to the HTTP API."}
+	summary, comments := RenderReviewReview(result, "abc1234")
 
+	if !strings.Contains(summary, "## Summary\nAdds a health-check endpoint") {
+		t.Errorf("expected the Summary section to lead the comment, got:\n%s", summary)
+	}
+	if !strings.Contains(summary, "**Overall impact:** 🟢 Good") {
+		t.Errorf("expected a 🟢 Good overall impact with zero findings, got:\n%s", summary)
+	}
 	if !strings.Contains(summary, "No issues found") {
 		t.Errorf("expected an explicit no-issues message for an empty findings slice, got:\n%s", summary)
 	}
@@ -120,13 +127,23 @@ func TestRenderReviewReview_NoIssuesSaysSo(t *testing.T) {
 	}
 }
 
+func TestRenderReviewReview_NoSummaryOmitsSection(t *testing.T) {
+	summary, _ := RenderReviewReview(provider.ReviewResult{}, "abc1234")
+	if strings.Contains(summary, "## Summary") {
+		t.Errorf("expected no Summary section when Summary is empty, got:\n%s", summary)
+	}
+}
+
 func TestRenderReviewReview_AnchoredFindingsBecomeInlineComments(t *testing.T) {
-	findings := []provider.Assessment{
-		{File: "a.go", Line: 1, Category: "correctness", Severity: "P2", Comment: "off-by-one", Confidence: "medium", Anchored: true},
-		{File: "b.go", Line: 7, Category: "security", Severity: "P0", Comment: "a hardcoded credential", Confidence: "high", Anchored: true},
+	result := provider.ReviewResult{
+		Summary: "Adds a hardcoded-credential check and fixes an off-by-one in pagination.",
+		Findings: []provider.Assessment{
+			{File: "a.go", Line: 1, Category: "correctness", Severity: "P2", Comment: "off-by-one", Confidence: "medium", Anchored: true},
+			{File: "b.go", Line: 7, Category: "security", Severity: "P0", Comment: "a hardcoded credential", Confidence: "high", Anchored: true},
+		},
 	}
 
-	summary, comments := RenderReviewReview(findings, "abc1234")
+	summary, comments := RenderReviewReview(result, "abc1234")
 
 	if len(comments) != 2 {
 		t.Fatalf("len(comments) = %d, want 2", len(comments))
@@ -140,6 +157,32 @@ func TestRenderReviewReview_AnchoredFindingsBecomeInlineComments(t *testing.T) {
 	if !strings.Contains(summary, "🔴 1 critical") || !strings.Contains(summary, "🟡 1 warning") {
 		t.Errorf("summary = %q, want severity counts for both findings", summary)
 	}
+	if !strings.Contains(summary, "**Overall impact:** 🔴 Critical") {
+		t.Errorf("summary = %q, want 🔴 Critical overall impact since a P0 finding is present", summary)
+	}
+}
+
+func TestOverallImpact(t *testing.T) {
+	tests := []struct {
+		name      string
+		findings  []provider.Assessment
+		wantEmoji string
+		wantLabel string
+	}{
+		{"no findings", nil, "🟢", "Good"},
+		{"nit only", []provider.Assessment{{Severity: "nit"}}, "🟢", "Good"},
+		{"P3 only, no P0", []provider.Assessment{{Severity: "P3"}}, "🟡", "Warning"},
+		{"P1 without P0", []provider.Assessment{{Severity: "P1"}}, "🟡", "Warning"},
+		{"P0 present", []provider.Assessment{{Severity: "P3"}, {Severity: "P0"}}, "🔴", "Critical"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			emoji, label := OverallImpact(tt.findings)
+			if emoji != tt.wantEmoji || label != tt.wantLabel {
+				t.Errorf("OverallImpact(%+v) = (%q, %q), want (%q, %q)", tt.findings, emoji, label, tt.wantEmoji, tt.wantLabel)
+			}
+		})
+	}
 }
 
 // A completed CI-failure review (marker) and a completed plain-review
@@ -150,7 +193,7 @@ func TestMarkerAndReviewMarker_NeverCollide(t *testing.T) {
 	sha := "abc1234"
 	ciFinding := []provider.Assessment{{Category: "ci-failure", Severity: "P1", Confidence: "high", Comment: "x"}}
 	ciBody, _ := RenderAssessmentReview(ciFinding, sha, "")
-	reviewBody, _ := RenderReviewReview(nil, sha)
+	reviewBody, _ := RenderReviewReview(provider.ReviewResult{Summary: "x"}, sha)
 
 	if strings.Contains(ciBody, reviewMarker(sha)) {
 		t.Error("a CI-failure review must not embed the review marker")

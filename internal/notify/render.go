@@ -94,10 +94,18 @@ func RenderMerged(pr PullRequest) SlackAttachmentMessage {
 }
 
 // RenderCIFailurePosted builds the Slack notification for a CI check
-// failure. No diagnosis text -- that's in the GitHub PR comment the AI CI
-// agent posts separately; Slack only ever gets the fact that CI failed.
-func RenderCIFailurePosted(pr PullRequest) SlackAttachmentMessage {
-	return lifecycleAttachment(colorCIFailed, "CI check failed", "CI failed", pr, nil)
+// failure. No diagnosis or findings text -- that's in the GitHub PR
+// comment the AI CI agent posts separately. impactEmoji/impactLabel are
+// the same 🔴 Critical / 🟡 Warning / 🟢 Good verdict the GitHub PR-review
+// comment computes via post.OverallImpact, so the two surfaces never
+// disagree about how bad a given run was -- pass "", "" to omit the
+// field entirely (e.g. the diagnosis itself couldn't be produced).
+func RenderCIFailurePosted(pr PullRequest, impactEmoji, impactLabel string) SlackAttachmentMessage {
+	var extra []SlackText
+	if impactEmoji != "" {
+		extra = append(extra, SlackText{Type: "mrkdwn", Text: fmt.Sprintf("*Impact:*\n%s %s", impactEmoji, impactLabel)})
+	}
+	return lifecycleAttachment(colorCIFailed, "CI check failed", "CI failed", pr, extra)
 }
 
 // lifecycleAttachment builds the single-attachment payload shared by all
