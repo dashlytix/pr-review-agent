@@ -6,6 +6,11 @@ import (
 )
 
 func TestGet_DefaultsToClaudeProvider(t *testing.T) {
+	os.Setenv("LLM_PROXY_API_KEY", "proxy-key")
+	os.Setenv("LLM_MODEL", "gpt-test")
+	defer os.Unsetenv("LLM_PROXY_API_KEY")
+	defer os.Unsetenv("LLM_MODEL")
+
 	for _, name := range []string{"", "claude"} {
 		p, err := Get(name, "key")
 		if err != nil {
@@ -16,6 +21,10 @@ func TestGet_DefaultsToClaudeProvider(t *testing.T) {
 		}
 	}
 }
+
+// See endpoint_test.go for the full two-tier wiring assertions
+// (TestGet_ClaudeWithoutEnvOverridesUsesTwoTierDefault) and the
+// fail-fast-without-model case (TestGet_ClaudeWithoutEnvOverridesRequiresModel).
 
 func TestGet_OpenAI(t *testing.T) {
 	p, err := Get("openai", "key")

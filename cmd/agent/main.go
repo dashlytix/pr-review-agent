@@ -109,6 +109,8 @@ func run() error {
 	// keeps the eval harness and local shell runs working unchanged.
 	llmBaseURL := os.Getenv("INPUT_LLM-BASE-URL")
 	llmModel := os.Getenv("INPUT_LLM-MODEL")
+	llmProxyAPIKey := os.Getenv("INPUT_LLM-PROXY-API-KEY")
+	llmFallbackModel := os.Getenv("INPUT_LLM-FALLBACK-MODEL")
 	repoFull := os.Getenv("GITHUB_REPOSITORY")
 	eventName := os.Getenv("GITHUB_EVENT_NAME")
 	eventPath := os.Getenv("GITHUB_EVENT_PATH")
@@ -146,7 +148,7 @@ func run() error {
 		if apiKey == "" {
 			return fmt.Errorf("missing llm-api-key input")
 		}
-		llmProvider, err := buildProvider(providerName, apiKey, llmBaseURL, llmModel)
+		llmProvider, err := buildProvider(providerName, apiKey, llmBaseURL, llmModel, llmProxyAPIKey, llmFallbackModel)
 		if err != nil {
 			return err
 		}
@@ -160,7 +162,7 @@ func run() error {
 	if apiKey == "" {
 		return fmt.Errorf("missing llm-api-key input")
 	}
-	llmProvider, err := buildProvider(providerName, apiKey, llmBaseURL, llmModel)
+	llmProvider, err := buildProvider(providerName, apiKey, llmBaseURL, llmModel, llmProxyAPIKey, llmFallbackModel)
 	if err != nil {
 		return err
 	}
@@ -190,13 +192,19 @@ func run() error {
 // path that needs one (the workflow_run failure path and the schedule
 // reconciliation sweep) so the base-URL/model override precedence lives
 // in one place.
-func buildProvider(providerName, apiKey, llmBaseURL, llmModel string) (provider.Provider, error) {
+func buildProvider(providerName, apiKey, llmBaseURL, llmModel, llmProxyAPIKey, llmFallbackModel string) (provider.Provider, error) {
 	llmCfg := provider.ConfigFromEnv(providerName, apiKey)
 	if llmBaseURL != "" {
 		llmCfg.BaseURL = llmBaseURL
 	}
 	if llmModel != "" {
 		llmCfg.Model = llmModel
+	}
+	if llmProxyAPIKey != "" {
+		llmCfg.ProxyAPIKey = llmProxyAPIKey
+	}
+	if llmFallbackModel != "" {
+		llmCfg.FallbackModel = llmFallbackModel
 	}
 	return provider.New(llmCfg) // unsupported provider name fails fast here, per §7
 }
