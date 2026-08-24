@@ -2,12 +2,7 @@
 
 Implementation of `ADR-001` / the accompanying Tech Spec (`AI_CI_Agent_ADR_TechSpec.docx`): a stateless GitHub Action that investigates a CI failure and posts findings as a PR comment. No database, no separate service — every invocation re-derives its context from the GitHub API (§3).
 
-**CI completion is the single entry point, with two outcomes.** The `workflow_run` trigger fires once the `CI` workflow completes, and dispatches on its conclusion:
-
-- **Failure** → the full pipeline: `gather.Gather` → `Provider.Assess` → `post.RenderAssessments`/`post.Post`. Findings are an array rather than a single one: exactly one mandatory `ci-failure` diagnosis, plus zero or more additional `correctness`/`security`/`style`/`performance` findings spotted in the same diff while investigating.
-- **Success** → the LLM is never called (no `Provider.Assess`, no API cost) — just a short templated `post.RenderPass`/`post.PostPass` comment acknowledging the pass.
-
-A separate `on: pull_request` (`opened`/`closed`) trigger is unrelated to review: it only drives Slack lifecycle notifications (see "Slack notifications" below). A prior revision (see git history, PR #8) ran a review independent of CI status on every `opened`/`synchronize` event; that trigger has been reverted so CI status gates the review pipeline again, per the original ADR-001 §1 design.
+**Two entry points, one finding schema.** The CI-failure trigger (`workflow_run`) returns an array of findings rather than a single one: exactly one mandatory `ci-failure` diagnosis, plus zero or more additional `correctness`/`security`/`style`/`performance` findings spotted in the same diff while investigating. A second `on: pull_request` (`opened`/`synchronize`) trigger runs a plain PR review independent of any CI outcome, returning zero or more findings from that same category set (minus `ci-failure`, which doesn't apply here). This is the "shared engine with two entry points — PR review and CI failure" §Context anticipated, implemented as two Provider methods (`Assess`, `Review`) over one finding schema rather than two parallel ones. See "Full PR review" below.
 
 ## Layout vs. the spec
 
@@ -15,11 +10,11 @@ A separate `on: pull_request` (`opened`/`closed`) trigger is unrelated to review
 |---|---|---|
 | `action.yml` | §4.1 | Action definition — `llm-provider` (default `claude`), `llm-api-key`, `llm-base-url`/`llm-model` for pointing a provider at an API-compatible gateway, plus a `github-token` input the spec's snippet didn't spell out but the Action needs to read context and post comments |
 | `Dockerfile` | §2 | Multi-stage build, stdlib-only Go binary on a distroless base |
-| `cmd/agent/main.go` | §5, §7 | Orchestration: gather → assess → post (`investigate`) on CI failure, the templated `postPassComment` on CI success, the schedule-triggered reconciliation sweep (§7), and Slack lifecycle notifications (`handlePullRequestEvent`) for the `pull_request` opened/closed trigger |
-| `internal/gather` | §2.1, §3 | GitHub API calls for the log tail, PR diff, touched files; language-aware failure-line extraction (Go/Rust/TS/SQL, §1). `GatherForReview` (no log tail, for a CI-independent review) is currently unused by `main.go` since the review trigger was reverted to gate on CI status — kept in place rather than deleted, in case that entry point returns |
-| `internal/provider` | §4.2 | `Provider` interface (`Assess` and `Review` both return `[]Assessment`), `ClaudeProvider`, `OpenAIProvider`. `Review` has no current caller in `main.go`, same as `GatherForReview` above |
-| `internal/assess` | §4.2, §6.1 | Prompt building, JSON array parsing + one bounded repair attempt, diff-anchor validation — all applied per-finding; `Review*`-prefixed prompt/parse functions served the reverted CI-independent review path and are currently uncalled |
-| `internal/post` | §4.3, §4.4, §6.3 | Renders every finding into one comment (primary `ci-failure` finding first, any extras in an "Other findings" section), marker-based idempotency, stale-head handling; `RenderPass`/`PostPass` post the CI-success path's short templated comment under its own `passMarker`. `RenderReviewFindings`/`PostReview`/`reviewMarker` served the reverted review path and are currently uncalled |
+| `cmd/agent/main.go` | §5, §7 | Orchestration: gather → assess → post (`investigate`), the schedule-triggered reconciliation sweep (§7), and the plain-PR-review path (`reviewPR`) for the `pull_request` opened/synchronize trigger |
+| `internal/gather` | §2.1, §3 | GitHub API calls for the log tail, PR diff, touched files; language-aware failure-line extraction (Go/Rust/TS/SQL, §1); `GatherForReview` skips the log tail for the review path, where no CI run exists |
+| `internal/provider` | §4.2 | `Provider` interface (`Assess` and `Review` both return `[]Assessment`), `ClaudeProvider`, `OpenAIProvider` |
+| `internal/assess` | §4.2, §6.1 | Prompt building, JSON array parsing + one bounded repair attempt, diff-anchor validation — all applied per-finding; `Review*`-prefixed prompt/parse functions serve the PR-review path, where no category is mandatory |
+| `internal/post` | §4.3, §4.4, §6.3 | Renders every finding into one comment (primary `ci-failure` finding first, any extras in an "Other findings" section), marker-based idempotency, stale-head handling; `RenderReviewFindings`/`PostReview` are the review path's counterparts, keyed by a distinct `reviewMarker` so a review comment and a CI-failure comment on the same commit never collide |
 | `internal/ghclient` | — | Shared GitHub REST client with retry/backoff on rate limiting (not named as its own package in the spec, but needed by both `gather` and `post`) |
 | `eval/` | §9 | Evaluation harness — 20 fixtures across the four target languages and a scoring CLI (scores the mandatory `ci-failure` finding against each fixture's known answer) |
 
@@ -102,6 +97,19 @@ LLM_API_KEY=implicit OPENAI_BASE_URL=https://llm.int.exe.xyz OPENAI_MODEL=gpt-5.
 
 The first Claude run through that gateway also surfaced a real bug rather than a scoring result: 15/20 fixtures errored because `ClaudeProvider` read `content[0].text`, and reasoning-capable models put a `thinking` block there. The empty string failed to parse, then got sent as the repair call's user message, which the Messages API rejects with a 400 — so a decode bug surfaced as a confusing "malformed after repair" error. `claudeResponse.Text()` now concatenates every `text` block and skips the rest, and a no-text response fails immediately instead of triggering a repair call it knows will 400.
 
+## Full PR review
+
+A second `on: pull_request` trigger (`opened`/`synchronize`) runs a plain code review of
+the PR's diff, independent of whether CI has run or passed — `gather.GatherForReview`
+fetches just the diff and touched files (no CI run is involved, so no log tail),
+`Provider.Review` prompts with `assess.ReviewSystemPrompt` instead of `SystemPrompt` (no
+mandatory `ci-failure` finding; an empty array is the common, valid "no issues found"
+result), and `post.RenderReviewFindings`/`post.PostReview` post the result under a distinct
+`reviewMarker` — deliberately not the same marker `investigate()` uses, so a review comment
+and a CI-failure comment landing on the same commit SHA never shadow each other in the
+idempotency lookup. It posts a GitHub PR comment only — no Slack notification for review
+completion; see "Slack notifications" below for what Slack does get.
+
 ## Slack notifications
 
 Optional, opt-in via the `slack-webhook-url` input (a Slack incoming webhook URL) — if
@@ -130,12 +138,12 @@ next heading), falls back to the body's own first few lines otherwise, and is tr
 than rendering "Summary: (none)".
 
 A consuming workflow needs a second trigger alongside the existing `workflow_run`/
-`schedule` ones to get the PR-lifecycle notifications:
+`schedule` ones to get both the PR-lifecycle notifications and the full review above:
 
 ```yaml
 on:
   pull_request:
-    types: [opened, closed]
+    types: [opened, synchronize, closed]
 
 jobs:
   pull-request:
@@ -149,8 +157,10 @@ jobs:
           slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
 ```
 
-`llm-provider`/`llm-api-key` are still required inputs on `action.yml`, but this job's code
-path never reaches the LLM — `pull_request` only ever drives the Slack lifecycle ping.
+`llm-provider`/`llm-api-key` **are** needed here: `opened`/`synchronize` reach the LLM
+provider for the full review (posted as a PR comment, not to Slack), while `closed` doesn't
+(only the Slack lifecycle ping fires) — `main.go` dispatches on the webhook's `action`
+internally, so one job/container run covers whichever of the two a given action needs.
 
 ## Open items carried over from §11
 

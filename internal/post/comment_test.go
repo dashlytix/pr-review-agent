@@ -127,42 +127,6 @@ func TestPostReview_DoesNotCollideWithCIFailureMarker(t *testing.T) {
 	}
 }
 
-// A CI-failure comment already posted for this SHA must not make
-// PostPass think a pass comment already exists too (and vice versa) --
-// independent idempotency lookups sharing a PR, same as PostReview.
-func TestPostPass_DoesNotCollideWithCIFailureMarker(t *testing.T) {
-	var createCalls int
-	mux := http.NewServeMux()
-	mux.HandleFunc("/repos/acme/widgets/issues/1/comments", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			json.NewEncoder(w).Encode([]map[string]any{
-				{"id": 1, "body": "CI failure comment " + marker("abc1234"), "html_url": "https://x/1"},
-			})
-		case http.MethodPost:
-			createCalls++
-			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(map[string]any{"id": 2, "html_url": "https://x/pass"})
-		}
-	})
-	server := httptest.NewServer(mux)
-	defer server.Close()
-
-	url, alreadyPosted, err := PostPass(context.Background(), testClient(server), 1, "abc1234", "pass body "+passMarker("abc1234"))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if alreadyPosted {
-		t.Error("PostPass must not see the CI-failure marker as its own")
-	}
-	if url != "https://x/pass" {
-		t.Errorf("url = %q, want the newly created pass comment's URL", url)
-	}
-	if createCalls != 1 {
-		t.Errorf("expected exactly 1 create call, got %d", createCalls)
-	}
-}
-
 func TestExists_TrueOnlyForMatchingSHA(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/acme/widgets/issues/1/comments", func(w http.ResponseWriter, r *http.Request) {

@@ -1,9 +1,9 @@
-# Runs the agent when the CI workflow completes, per ADR-001 §1: the
-# trigger is CI completion, not a PR being opened. A passing run gets a
-# short templated comment (no LLM call); a failing run gets the full
-# gather -> assess -> diagnosis pipeline. The pull_request trigger below
-# is unrelated to review -- it only drives Slack lifecycle notifications
-# (opened/closed/merged).
+# Runs the agent after CI fails, per ADR-001 §1: the trigger is a CI
+# failure, not a PR being opened. The pull_request trigger below is a
+# second, independent purpose: Slack lifecycle notifications
+# (opened/closed/merged) plus a full code review on opened/synchronize --
+# both handled by main.go's single pull_request event path in one job/
+# container run, since each action needs at most one of the two.
 name: AI CI Agent
 
 on:
@@ -12,7 +12,7 @@ on:
     workflows: ["CI"]
     types: [completed]
   pull_request:
-    types: [opened, closed]
+    types: [opened, synchronize, closed]
 
 # The repo-wide default is read-only; the agent has to write a PR comment.
 # Granting this here, in the workflow, rather than repo-wide keeps the
@@ -25,12 +25,11 @@ permissions:
   actions: read
 
 jobs:
-  ci-result:
-    # Act once CI has concluded, on either outcome; any other conclusion
-    # (cancelled/skipped/timed_out) has nothing to post. False (not an
-    # error) on the pull_request trigger too, since
-    # github.event.workflow_run doesn't exist there.
-    if: github.event_name == 'workflow_run' && (github.event.workflow_run.conclusion == 'failure' || github.event.workflow_run.conclusion == 'success')
+  investigate:
+    # Only act on a CI failure; a passing run has nothing to diagnose,
+    # and this condition is false (not an error) on the pull_request
+    # trigger too, since github.event.workflow_run doesn't exist there.
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'failure'
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
@@ -40,15 +39,16 @@ jobs:
           # Calls Anthropic's API directly -- the exe.dev gateway
           # (llm.int.exe.xyz) returns 402 "LLM credits exhausted" for
           # this account, so llm-base-url is left unset to fall back to
-          # https://api.anthropic.com. Only reached on a failing run --
-          # a passing run's short templated comment never calls the LLM.
+          # https://api.anthropic.com.
           llm-api-key: ${{ secrets.LLM_API_KEY }}
           llm-model: claude-opus-5
           slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
 
   pull-request:
-    # Opened/closed/merged Slack lifecycle pings only -- review is gated
-    # entirely on CI completion above, not on this trigger.
+    # Opened/closed/merged Slack pings, plus a full code review on
+    # opened/synchronize -- main.go dispatches on the action internally,
+    # so one job/container run covers whichever of the two this action
+    # needs (closed needs only the Slack ping; opened needs both).
     if: github.event_name == 'pull_request'
     runs-on: self-hosted
     steps:
@@ -56,8 +56,9 @@ jobs:
       - uses: ./
         with:
           llm-provider: claude
-          # Required by action.yml even though this job's code path never
-          # reaches the LLM -- only the Slack lifecycle ping fires here.
+          # Required by action.yml even though "closed" never reaches the
+          # LLM (only the Slack ping) -- "opened"/"synchronize" do, for
+          # the code review.
           llm-api-key: ${{ secrets.LLM_API_KEY }}
           llm-model: claude-opus-5
           slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}

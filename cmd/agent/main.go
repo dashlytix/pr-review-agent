@@ -4,15 +4,18 @@
 // a provider outage or a malformed response degrades to a fallback
 // comment instead of failing the calling workflow.
 //
-// The full review pipeline is gated entirely on CI completion
-// (GITHUB_EVENT_NAME=workflow_run): a failing run gets the full
-// gather → assess → post diagnosis (investigate); a passing run skips
-// the LLM entirely and gets a short templated comment (postPassComment).
-// GITHUB_EVENT_NAME=schedule is the §7 reconciliation backstop for a
-// dropped webhook — sweeps recent failed runs for any missing a marker
-// comment and catches them up. GITHUB_EVENT_NAME=pull_request is
-// unrelated to review: it only drives Slack lifecycle notifications for
-// opened/closed/merged.
+// Two triggers share the same investigate() logic:
+//   - GITHUB_EVENT_NAME=workflow_run: the normal path, invoked as a step
+//     in the failing workflow itself.
+//   - GITHUB_EVENT_NAME=schedule: the §7 reconciliation backstop for a
+//     dropped webhook — sweeps recent failed runs for any missing a
+//     marker comment and catches them up.
+//
+// GITHUB_EVENT_NAME=pull_request drives both a Slack lifecycle
+// notification (opened/closed/merged) and, independent of any CI
+// outcome, a full code review on opened/synchronize (reviewPR) — the two
+// are unrelated: every pull_request event gets the Slack ping, and
+// opened/synchronize additionally get the review.
 package main
 
 import (
@@ -53,7 +56,6 @@ type workflowRunEvent struct {
 	WorkflowRun struct {
 		ID           int64  `json:"id"`
 		Conclusion   string `json:"conclusion"`
-		HeadSHA      string `json:"head_sha"`
 		PullRequests []struct {
 			Number int `json:"number"`
 		} `json:"pull_requests"`
@@ -61,9 +63,9 @@ type workflowRunEvent struct {
 }
 
 // pullRequestEvent is the GITHUB_EVENT_PATH payload for
-// GITHUB_EVENT_NAME=pull_request, which drives only the Slack lifecycle
-// notifications (opened/closed/merged) — review is gated on CI
-// completion, not on this trigger.
+// GITHUB_EVENT_NAME=pull_request. It drives both the Slack lifecycle
+// notifications (opened/closed/merged) and, on opened/synchronize, the
+// plain PR-review path (reviewPR) — Head.SHA and Body are used by both.
 type pullRequestEvent struct {
 	Action      string `json:"action"`
 	PullRequest struct {
@@ -128,46 +130,33 @@ func run() error {
 		if err != nil {
 			return fmt.Errorf("read pull_request event: %w", err)
 		}
-		return handlePullRequestEvent(ctx, event, repo, slackWebhookURL)
-	}
-
-	if eventName == "workflow_run" {
-		event, err := loadWorkflowRunEvent(eventPath)
-		if err != nil {
-			return fmt.Errorf("read workflow_run event: %w", err)
+		if err := handlePullRequestEvent(ctx, event, repo, slackWebhookURL); err != nil {
+			return err
 		}
 
-		var prNumber int
-		if len(event.WorkflowRun.PullRequests) > 0 {
-			prNumber = event.WorkflowRun.PullRequests[0].Number
-		}
-
-		switch event.WorkflowRun.Conclusion {
-		case "success":
-			// A passing run has nothing to diagnose -- the LLM is never
-			// called for this path (no Provider.Assess/Review, no API
-			// cost), just a short templated comment.
-			return postPassComment(ctx, client, prNumber, event.WorkflowRun.HeadSHA)
-
-		case "failure":
-			if apiKey == "" {
-				return fmt.Errorf("missing llm-api-key input")
-			}
-			llmProvider, err := buildProvider(providerName, apiKey, llmBaseURL, llmModel)
-			if err != nil {
-				return err
-			}
-			return investigate(ctx, client, llmProvider, event.WorkflowRun.ID, prNumber, repo, slackWebhookURL)
-
-		default:
-			log.Printf("workflow run concluded %q, nothing to do", event.WorkflowRun.Conclusion)
+		// opened/synchronize also get a full code review — closed and any
+		// other action stop here, same as handlePullRequestEvent's own
+		// no-op default for actions it doesn't send a Slack ping for.
+		if event.Action != "opened" && event.Action != "synchronize" {
 			return nil
 		}
+		// The review path needs a provider, same fail-fast as the
+		// schedule/workflow_run paths below; the notify-only actions
+		// (closed) returned above without ever needing one.
+		if apiKey == "" {
+			return fmt.Errorf("missing llm-api-key input")
+		}
+		llmProvider, err := buildProvider(providerName, apiKey, llmBaseURL, llmModel)
+		if err != nil {
+			return err
+		}
+		pr := event.PullRequest
+		return reviewPR(ctx, client, llmProvider, pr.Number, pr.Head.SHA)
 	}
 
-	// The remaining path (schedule) is the §7 reconciliation backstop,
-	// which only ever catches up failed runs, so it needs a provider
-	// unconditionally.
+	// The remaining paths (schedule, workflow_run) drive an LLM
+	// assessment, so they need a provider — the pull_request "closed"
+	// notification above doesn't and returns before reaching here.
 	if apiKey == "" {
 		return fmt.Errorf("missing llm-api-key input")
 	}
@@ -175,7 +164,26 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	return reconcile(ctx, client, llmProvider, repo, slackWebhookURL)
+
+	if eventName == "schedule" {
+		return reconcile(ctx, client, llmProvider, repo, slackWebhookURL)
+	}
+
+	event, err := loadWorkflowRunEvent(eventPath)
+	if err != nil {
+		return fmt.Errorf("read workflow_run event: %w", err)
+	}
+	if event.WorkflowRun.Conclusion != "failure" {
+		log.Printf("workflow run concluded %q, nothing to investigate", event.WorkflowRun.Conclusion)
+		return nil
+	}
+
+	var prNumber int
+	if len(event.WorkflowRun.PullRequests) > 0 {
+		prNumber = event.WorkflowRun.PullRequests[0].Number
+	}
+
+	return investigate(ctx, client, llmProvider, event.WorkflowRun.ID, prNumber, repo, slackWebhookURL)
 }
 
 // buildProvider resolves a Provider from action inputs, shared by every
@@ -196,10 +204,10 @@ func buildProvider(providerName, apiKey, llmBaseURL, llmModel string) (provider.
 // handlePullRequestEvent sends a Slack lifecycle notification for a PR
 // opened/closed/merged webhook event -- a uniform, minimal card with no
 // review content. Findings/diagnosis text never reach Slack; they stay
-// in the GitHub PR comment posted by investigate/postPassComment on CI
-// completion. Sending is the entire purpose of this path (there's no PR
-// comment fallback here), so a send failure is returned as this run's
-// error rather than merely logged.
+// in the GitHub PR comment posted by reviewPR/investigate. Sending is
+// the entire purpose of this path (there's no PR comment fallback here),
+// so a send failure is returned as this run's error rather than merely
+// logged.
 func handlePullRequestEvent(ctx context.Context, event *pullRequestEvent, repo, slackWebhookURL string) error {
 	pr := event.PullRequest
 	info := notify.PullRequest{
@@ -297,31 +305,58 @@ func investigate(ctx context.Context, client *ghclient.Client, llmProvider provi
 	return nil
 }
 
-// postPassComment posts a short templated comment for a workflow run
-// whose triggering CI check passed. It never calls gather.Gather or the
-// LLM provider -- a passing run has nothing to diagnose, so this path
-// costs nothing beyond the one comment. headSHA comes straight off the
-// workflow_run webhook payload, avoiding an extra GitHub API round trip.
-func postPassComment(ctx context.Context, client *ghclient.Client, prNumber int, headSHA string) error {
-	if prNumber == 0 {
-		log.Printf("no pull request associated with this run, nothing to post")
-		return nil
+// reviewPR runs a plain PR code review — independent of any CI outcome —
+// for the pull_request opened/synchronize trigger. It mirrors
+// investigate()'s gather → assess → post shape and §7 degrade-gracefully
+// rules, scaled down since there's no CI run to fall back to. Posting
+// uses PostReview/reviewMarker, a distinct marker from investigate()'s,
+// so a review comment and a CI-failure comment on the same commit SHA
+// never collide in the idempotency lookup. No Slack notification here —
+// review completion isn't one of the four lifecycle events Slack gets.
+func reviewPR(ctx context.Context, client *ghclient.Client, llmProvider provider.Provider, prNumber int, headSHA string) error {
+	req, gatherErr := gather.GatherForReview(ctx, client, prNumber)
+
+	var findings []provider.Assessment
+	assessErr := gatherErr
+	if gatherErr == nil {
+		findings, assessErr = llmProvider.Review(ctx, req)
 	}
 
-	body := post.RenderPass(headSHA)
-	url, alreadyPosted, err := post.PostPass(ctx, client, prNumber, headSHA, body)
+	body := renderReviewBody(assessErr, findings, headSHA)
+
+	url, alreadyPosted, err := post.PostReview(ctx, client, prNumber, headSHA, body)
 	if err != nil {
 		return fmt.Errorf("post: %w", err)
 	}
 	if alreadyPosted {
-		log.Printf("pr %d: pass comment already posted: %s", prNumber, url)
+		log.Printf("pr %d: review already posted: %s", prNumber, url)
 		return nil
 	}
-	log.Printf("pr %d: posted pass comment: %s", prNumber, url)
 
-	writeOutput("comment-url", url)
-	writeOutput("comment-body", body)
+	log.Printf("pr %d: posted review: %s", prNumber, url)
 	return nil
+}
+
+// renderReviewBody is renderBody's counterpart for the review path: the
+// same §7 degrade-gracefully cases, minus the fallback's raw-logs link
+// (there's no CI run here to link to).
+func renderReviewBody(assessErr error, findings []provider.Assessment, headSHA string) string {
+	switch {
+	case assessErr == nil:
+		return post.RenderReviewFindings(findings, headSHA)
+
+	case errors.Is(assessErr, assess.ErrMalformed):
+		log.Printf("review malformed after repair attempt: %v", assessErr)
+		return post.RenderReviewMinimal("the model's output could not be parsed as a valid review, even after one repair attempt", headSHA)
+
+	case isRateLimited(assessErr):
+		log.Printf("rate limited: %v", assessErr)
+		return post.RenderReviewMinimal("the GitHub API rate limit was hit while gathering the diff", headSHA)
+
+	default:
+		log.Printf("provider unavailable: %v", assessErr)
+		return post.RenderReviewFallback(headSHA)
+	}
 }
 
 // reconcile is the §7 backstop for a dropped webhook: sweep recent

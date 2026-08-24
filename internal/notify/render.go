@@ -63,61 +63,68 @@ const (
 )
 
 // RenderOpened builds the Slack notification for a newly opened PR,
-// adding a Summary field excerpted from the PR's own description
+// adding a Summary block excerpted from the PR's own description
 // (pull_request.body) when one is present. That excerpt is the author's
 // own text from the webhook payload -- never the AI review agent's
-// output, and never an LLM call.
+// output, and never an LLM call. Summary gets its own full-width block
+// rather than a fields-grid entry: Slack renders "fields" as a 2-column
+// grid, and a short Status value next to a long multi-line excerpt
+// squeezed both into half-width columns.
 func RenderOpened(pr PullRequest) SlackAttachmentMessage {
-	var extra []SlackText
+	var extraBlocks []SlackBlock
 	if excerpt := summaryExcerpt(pr.Body); excerpt != "" {
-		extra = append(extra, SlackText{Type: "mrkdwn", Text: fmt.Sprintf("*Summary:*\n%s", excerpt)})
+		extraBlocks = append(extraBlocks, SlackBlock{Type: "section", Text: &SlackText{Type: "mrkdwn", Text: fmt.Sprintf("*Summary:*\n%s", excerpt)}})
 	}
-	return lifecycleAttachment(colorOpened, "PR opened", "Opened", pr, extra...)
+	return lifecycleAttachment(colorOpened, "PR opened", "Opened", pr, nil, extraBlocks...)
 }
 
 // RenderClosed builds the Slack notification for a PR closed without
 // being merged.
 func RenderClosed(pr PullRequest) SlackAttachmentMessage {
-	return lifecycleAttachment(colorClosed, "PR closed", "Closed", pr)
+	return lifecycleAttachment(colorClosed, "PR closed", "Closed", pr, nil)
 }
 
 // RenderMerged builds the Slack notification for a merged PR, adding a
 // Commit field (short SHA + base branch) alongside the standard Status
-// field.
+// field -- both short, single-line values, so the fields grid fits them
+// fine.
 func RenderMerged(pr PullRequest) SlackAttachmentMessage {
 	commit := SlackText{Type: "mrkdwn", Text: fmt.Sprintf("*Commit:*\n`%s` on `%s`", shortSHA(pr.HeadSHA), pr.BaseRef)}
-	return lifecycleAttachment(colorMerged, "PR merged", "Merged", pr, commit)
+	return lifecycleAttachment(colorMerged, "PR merged", "Merged", pr, []SlackText{commit})
 }
 
 // RenderCIFailurePosted builds the Slack notification for a CI check
 // failure. No diagnosis text -- that's in the GitHub PR comment the AI CI
 // agent posts separately; Slack only ever gets the fact that CI failed.
 func RenderCIFailurePosted(pr PullRequest) SlackAttachmentMessage {
-	return lifecycleAttachment(colorCIFailed, "CI check failed", "CI failed", pr)
+	return lifecycleAttachment(colorCIFailed, "CI check failed", "CI failed", pr, nil)
 }
 
 // lifecycleAttachment builds the single-attachment payload shared by all
 // four lifecycle notifications: a colored left border, a header +
-// subtitle section, a Status (+ optional extra) fields section, and a
+// subtitle section, a Status (+ optional extra) fields section, any
+// extraBlocks needing the card's full width (e.g. Summary), and a
 // "View PR" button. Deliberately carries no review content, findings, or
 // diagnosis text -- that stays in the GitHub PR comment posted by
 // internal/post's renderers.
-func lifecycleAttachment(color, eventLabel, status string, pr PullRequest, extraFields ...SlackText) SlackAttachmentMessage {
+func lifecycleAttachment(color, eventLabel, status string, pr PullRequest, extraFields []SlackText, extraBlocks ...SlackBlock) SlackAttachmentMessage {
 	fields := append([]SlackText{{Type: "mrkdwn", Text: fmt.Sprintf("*Status:*\n%s", status)}}, extraFields...)
+	blocks := []SlackBlock{
+		{Type: "section", Text: &SlackText{Type: "mrkdwn", Text: fmt.Sprintf("*%s — PR #%d*\n%s · opened by %s", eventLabel, pr.Number, pr.Repo, pr.Author)}},
+		{Type: "section", Fields: fields},
+	}
+	blocks = append(blocks, extraBlocks...)
+	blocks = append(blocks, SlackBlock{Type: "actions", Elements: []any{SlackButton{
+		Type:     "button",
+		Text:     SlackText{Type: "plain_text", Text: "View PR"},
+		URL:      pr.HTMLURL,
+		ActionID: "view_pr",
+	}}})
 	return SlackAttachmentMessage{
 		Attachments: []SlackAttachment{{
 			Color:    color,
 			Fallback: fmt.Sprintf("%s — PR #%d", eventLabel, pr.Number),
-			Blocks: []SlackBlock{
-				{Type: "section", Text: &SlackText{Type: "mrkdwn", Text: fmt.Sprintf("*%s — PR #%d*\n%s · opened by %s", eventLabel, pr.Number, pr.Repo, pr.Author)}},
-				{Type: "section", Fields: fields},
-				{Type: "actions", Elements: []any{SlackButton{
-					Type:     "button",
-					Text:     SlackText{Type: "plain_text", Text: "View PR"},
-					URL:      pr.HTMLURL,
-					ActionID: "view_pr",
-				}}},
-			},
+			Blocks:   blocks,
 		}},
 	}
 }

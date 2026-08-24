@@ -20,11 +20,3 @@ func marker(sha string) string {
 func reviewMarker(sha string) string {
 	return fmt.Sprintf("<!-- ai-ci-agent:review-marker:sha=%s -->", sha)
 }
-
-// passMarker is marker's counterpart for a passing CI run's short
-// templated comment. Distinct from both marker and reviewMarker so none
-// of the three ever shadow each other in findByMarker's substring
-// lookup.
-func passMarker(sha string) string {
-	return fmt.Sprintf("<!-- ai-ci-agent:pass-marker:sha=%s -->", sha)
-}

@@ -48,6 +48,31 @@ func TestRenderOpened_WithBodyAddsSummaryField(t *testing.T) {
 	}
 }
 
+// The Summary excerpt must render as its own full-width section block,
+// not squeezed into the Status fields grid (Slack renders "fields" as a
+// 2-column layout, which cramped a long multi-line excerpt next to the
+// short Status value).
+func TestRenderOpened_SummaryIsFullWidthBlockNotFieldsGridEntry(t *testing.T) {
+	pr := PullRequest{Number: 1, Repo: "widgets", HTMLURL: "https://github.com/o/r/pull/1", Author: "alice", Body: "some description"}
+	msg := RenderOpened(pr)
+
+	blocks := msg.Attachments[0].Blocks
+	if len(blocks) != 4 {
+		t.Fatalf("len(Blocks) = %d, want 4 (header, fields, summary, actions)", len(blocks))
+	}
+	fieldsBlock := blocks[1]
+	if len(fieldsBlock.Fields) != 1 {
+		t.Errorf("fields block = %+v, want exactly the Status field, no Summary mixed in", fieldsBlock)
+	}
+	summaryBlock := blocks[2]
+	if summaryBlock.Text == nil || !strings.Contains(summaryBlock.Text.Text, "some description") {
+		t.Errorf("summary block = %+v, want a text block containing the excerpt", summaryBlock)
+	}
+	if len(summaryBlock.Fields) != 0 {
+		t.Errorf("summary block = %+v, want it to use Text, not Fields", summaryBlock)
+	}
+}
+
 func TestRenderClosedAndMerged_NeverGetSummaryField(t *testing.T) {
 	body := "## Summary\n- some change"
 	pr := PullRequest{Number: 1, Repo: "widgets", HTMLURL: "https://github.com/o/r/pull/1", Author: "alice", Body: body}
