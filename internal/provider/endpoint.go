@@ -13,7 +13,7 @@ import "strings"
 //
 // path is the provider's canonical suffix, e.g. "/v1/messages".
 func resolveEndpoint(base, path string) string {
-	base = strings.TrimRight(strings.TrimSpace(base), "/")
+	base = strings.TrimSpace(base)
 	if base == "" {
 		return path
 	}
