@@ -41,6 +41,13 @@ func PostReview(ctx context.Context, client *ghclient.Client, prNumber int, sha,
 	return postWithMarker(ctx, client, prNumber, reviewMarker(sha), body)
 }
 
+// PostPass is Post's counterpart for a passing CI run's short templated
+// comment (see passMarker) — its own marker so it never collides with a
+// CI-failure or review comment on the same commit SHA.
+func PostPass(ctx context.Context, client *ghclient.Client, prNumber int, sha, body string) (postedURL string, alreadyPosted bool, err error) {
+	return postWithMarker(ctx, client, prNumber, passMarker(sha), body)
+}
+
 func postWithMarker(ctx context.Context, client *ghclient.Client, prNumber int, m, body string) (postedURL string, alreadyPosted bool, err error) {
 	existing, err := findByMarker(ctx, client, prNumber, m)
 	if err != nil {

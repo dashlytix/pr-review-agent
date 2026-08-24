@@ -141,6 +141,19 @@ func RenderReviewMinimal(reason, sha string) string {
 	return b.String()
 }
 
+// RenderPass builds the PR comment body for a run whose triggering CI
+// check passed. There's no diagnosis or findings here -- Provider.Assess/
+// Review is never invoked for this path, so the comment is just a short
+// templated acknowledgment plus the marker PostPass looks up for
+// idempotency.
+func RenderPass(sha string) string {
+	var b strings.Builder
+	b.WriteString("### 🤖 AI CI Agent\n\n")
+	b.WriteString("✅ All CI checks passed. No review issues to flag.\n\n")
+	b.WriteString(passMarker(sha))
+	return b.String()
+}
+
 // RenderFallback covers §7's "LLM provider unavailable or times out":
 // post a fallback comment linking the raw logs and exit non-fatally.
 func RenderFallback(runHTMLURL, sha string) string {

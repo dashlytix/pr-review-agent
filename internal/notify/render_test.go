@@ -2,183 +2,104 @@ package notify
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
 	"testing"
 )
 
-func TestRenderOpened_IncludesTitleURLAndAuthor(t *testing.T) {
-	got := RenderOpened(PullRequest{
-		Number:  1,
-		Title:   "Fix the thing",
-		HTMLURL: "https://github.com/o/r/pull/1",
-		Author:  "alice",
-	})
-	for _, want := range []string{"Fix the thing", "https://github.com/o/r/pull/1", "alice", "#1"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("RenderOpened() = %q, want it to contain %q", got, want)
-		}
-	}
-}
+func TestRenderOpened_HasBlueBorderHeaderAndButton(t *testing.T) {
+	pr := PullRequest{Number: 1, Repo: "widgets", HTMLURL: "https://github.com/o/r/pull/1", Author: "alice"}
+	msg := RenderOpened(pr)
 
-func TestRenderOpened_IncludesSummaryAndReviewers(t *testing.T) {
-	got := RenderOpened(PullRequest{
-		Number:    1,
-		Title:     "Fix the thing",
-		HTMLURL:   "https://github.com/o/r/pull/1",
-		Author:    "alice",
-		Body:      "- does the fix\n- adds a test",
-		Reviewers: []string{"bob", "carol"},
-	})
-	for _, want := range []string{"Summary", "does the fix", "adds a test", "Reviewers", "bob", "carol"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("RenderOpened() = %q, want it to contain %q", got, want)
-		}
+	if len(msg.Attachments) != 1 {
+		t.Fatalf("len(Attachments) = %d, want 1", len(msg.Attachments))
 	}
-}
-
-func TestRenderOpened_OmitsSummaryAndReviewersWhenAbsent(t *testing.T) {
-	got := RenderOpened(PullRequest{
-		Number:  1,
-		Title:   "Fix the thing",
-		HTMLURL: "https://github.com/o/r/pull/1",
-		Author:  "alice",
-	})
-	for _, unwanted := range []string{"Summary", "Reviewers"} {
-		if strings.Contains(got, unwanted) {
-			t.Errorf("RenderOpened() with no body/reviewers = %q, want it not to contain %q", got, unwanted)
-		}
-	}
-}
-
-func TestRenderClosed_IncludesTitleURLAndAuthor(t *testing.T) {
-	got := RenderClosed(PullRequest{
-		Number:  1,
-		Title:   "Fix the thing",
-		HTMLURL: "https://github.com/o/r/pull/1",
-		Author:  "alice",
-	})
-	for _, want := range []string{"Fix the thing", "https://github.com/o/r/pull/1", "alice", "without merging"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("RenderClosed() = %q, want it to contain %q", got, want)
-		}
-	}
-}
-
-func TestRenderMerged_ProdBranchSaysMergedToProduction(t *testing.T) {
-	pr := PullRequest{Number: 1, Title: "Fix the thing", HTMLURL: "https://github.com/o/r/pull/1", Author: "alice"}
-	got := RenderMerged(pr, "main", "main")
-	if !strings.Contains(got, "production") {
-		t.Errorf("RenderMerged(base=main, prod=main) = %q, want it to mention production", got)
-	}
-}
-
-func TestRenderMerged_NonProdBranchSaysPlainMerged(t *testing.T) {
-	pr := PullRequest{Number: 1, Title: "Fix the thing", HTMLURL: "https://github.com/o/r/pull/1", Author: "alice"}
-	got := RenderMerged(pr, "develop", "main")
-	if strings.Contains(got, "production") {
-		t.Errorf("RenderMerged(base=develop, prod=main) = %q, want it not to mention production", got)
-	}
-	if !strings.Contains(got, "develop") {
-		t.Errorf("RenderMerged(base=develop, prod=main) = %q, want it to name the base branch", got)
-	}
-}
-
-func TestRenderReviewPosted_NoFindingsShowsCheckAndSkipsBulletsAndButton(t *testing.T) {
-	pr := PullRequest{Number: 152, Repo: "choice-sme-pricing", HTMLURL: "https://github.com/o/r/pull/152", Author: "fury0324"}
-	msg := RenderReviewPosted(pr, nil)
-
-	if len(msg.Blocks) != 2 {
-		t.Fatalf("len(Blocks) = %d, want 2 (header + no-issues context)", len(msg.Blocks))
-	}
-	if msg.Blocks[1].Type != "context" || msg.Blocks[1].Elements == nil {
-		t.Fatalf("Blocks[1] = %+v, want a context block with elements", msg.Blocks[1])
+	att := msg.Attachments[0]
+	if att.Color != colorOpened {
+		t.Errorf("Color = %q, want %q", att.Color, colorOpened)
 	}
 	got, _ := json.Marshal(msg)
-	for _, want := range []string{"Review posted on PR #152", "choice-sme-pricing", "fury0324", "white_check_mark", "No issues found"} {
+	for _, want := range []string{"PR opened — PR #1", "widgets", "alice", "Opened", "View PR", "https://github.com/o/r/pull/1"} {
 		if !strings.Contains(string(got), want) {
-			t.Errorf("RenderReviewPosted() = %s, want it to contain %q", got, want)
-		}
-	}
-	for _, unwanted := range []string{"actions", "button"} {
-		if strings.Contains(string(got), unwanted) {
-			t.Errorf("RenderReviewPosted() with no findings = %s, want it not to contain %q", got, unwanted)
+			t.Errorf("RenderOpened() = %s, want it to contain %q", got, want)
 		}
 	}
 }
 
-func TestRenderReviewPosted_WithFindingsHasFourBlocksAndSeverityCounts(t *testing.T) {
-	pr := PullRequest{Number: 152, Repo: "choice-sme-pricing", HTMLURL: "https://github.com/o/r/pull/152", Author: "fury0324"}
-	findings := []Finding{
-		{Title: "Possible SQL injection in quotes export query", Critical: true},
-		{Title: "Hardcoded credential in export handler", Critical: true},
-		{Title: "Missing input validation on price field", Critical: false},
-	}
-	msg := RenderReviewPosted(pr, findings)
+func TestRenderClosed_HasRedBorder(t *testing.T) {
+	pr := PullRequest{Number: 2, Repo: "widgets", HTMLURL: "https://github.com/o/r/pull/2", Author: "bob"}
+	msg := RenderClosed(pr)
 
-	if len(msg.Blocks) != 4 {
-		t.Fatalf("len(Blocks) = %d, want 4", len(msg.Blocks))
+	if msg.Attachments[0].Color != colorClosed {
+		t.Errorf("Color = %q, want %q", msg.Attachments[0].Color, colorClosed)
 	}
 	got, _ := json.Marshal(msg)
-	for _, want := range []string{
-		"red_circle", "2 critical", "large_orange_circle", "1 warning",
-		"Possible SQL injection in quotes export query",
-		"Hardcoded credential in export handler",
-		"View full review", "https://github.com/o/r/pull/152", "button",
-	} {
+	for _, want := range []string{"PR closed — PR #2", "Closed"} {
 		if !strings.Contains(string(got), want) {
-			t.Errorf("RenderReviewPosted() = %s, want it to contain %q", got, want)
+			t.Errorf("RenderClosed() = %s, want it to contain %q", got, want)
 		}
 	}
 }
 
-func TestRenderReviewPosted_MoreThanFiveFindingsAddsOverflowLine(t *testing.T) {
-	findings := make([]Finding, 7)
-	for i := range findings {
-		findings[i] = Finding{Title: fmt.Sprintf("finding %d", i)}
-	}
-	msg := RenderReviewPosted(PullRequest{Number: 1, HTMLURL: "https://github.com/o/r/pull/1"}, findings)
+func TestRenderMerged_HasGreenBorderAndCommitField(t *testing.T) {
+	pr := PullRequest{Number: 3, Repo: "widgets", HTMLURL: "https://github.com/o/r/pull/3", Author: "carol", BaseRef: "main", HeadSHA: "abc1234567"}
+	msg := RenderMerged(pr)
 
+	if msg.Attachments[0].Color != colorMerged {
+		t.Errorf("Color = %q, want %q", msg.Attachments[0].Color, colorMerged)
+	}
 	got, _ := json.Marshal(msg)
-	if !strings.Contains(string(got), "+2 more in the full review") {
-		t.Errorf("RenderReviewPosted() = %s, want it to contain the overflow line", got)
-	}
-	if strings.Contains(string(got), "finding 5") || strings.Contains(string(got), "finding 6") {
-		t.Errorf("RenderReviewPosted() = %s, want only the first 5 findings listed", got)
-	}
-}
-
-func TestRenderReviewUnavailable_DoesNotReadAsNoIssuesFound(t *testing.T) {
-	pr := PullRequest{Number: 152, Repo: "choice-sme-pricing", HTMLURL: "https://github.com/o/r/pull/152", Author: "fury0324"}
-	msg := RenderReviewUnavailable(pr, "the LLM provider was unavailable or timed out")
-
-	got, _ := json.Marshal(msg)
-	for _, want := range []string{"Review unavailable for PR #152", "LLM provider was unavailable", "View full review"} {
+	for _, want := range []string{"PR merged — PR #3", "Merged", "Commit", "abc1234", "main"} {
 		if !strings.Contains(string(got), want) {
-			t.Errorf("RenderReviewUnavailable() = %s, want it to contain %q", got, want)
+			t.Errorf("RenderMerged() = %s, want it to contain %q", got, want)
 		}
 	}
-	if strings.Contains(string(got), "No issues found") {
-		t.Errorf("RenderReviewUnavailable() = %s, want it not to read as a clean review", got)
+	if strings.Contains(string(got), "abc1234567") {
+		t.Errorf("RenderMerged() = %s, want the commit SHA shortened to 7 chars", got)
 	}
 }
 
-func TestRenderCIFailurePosted_HasSummaryAndButtonNoSeverityBadges(t *testing.T) {
-	pr := PullRequest{Number: 42, Repo: "choice-sme-pricing", HTMLURL: "https://github.com/o/r/pull/42", Author: "fury0324"}
-	msg := RenderCIFailurePosted(pr, "nil pointer dereference in the export handler")
+func TestRenderMerged_OmitsCommitFieldForOtherEvents(t *testing.T) {
+	pr := PullRequest{Number: 4, Repo: "widgets", HTMLURL: "https://github.com/o/r/pull/4", Author: "dave"}
+	got, _ := json.Marshal(RenderOpened(pr))
+	if strings.Contains(string(got), "Commit") {
+		t.Errorf("RenderOpened() = %s, want no Commit field", got)
+	}
+}
 
-	if len(msg.Blocks) != 3 {
-		t.Fatalf("len(Blocks) = %d, want 3", len(msg.Blocks))
+func TestRenderCIFailurePosted_HasOrangeBorderAndNoDiagnosisText(t *testing.T) {
+	pr := PullRequest{Number: 5, Repo: "widgets", HTMLURL: "https://github.com/o/r/pull/5", Author: "erin"}
+	msg := RenderCIFailurePosted(pr)
+
+	if msg.Attachments[0].Color != colorCIFailed {
+		t.Errorf("Color = %q, want %q", msg.Attachments[0].Color, colorCIFailed)
 	}
 	got, _ := json.Marshal(msg)
-	for _, want := range []string{"CI failure on PR #42", "nil pointer dereference", "View full review"} {
+	for _, want := range []string{"CI check failed — PR #5", "CI failed", "View PR"} {
 		if !strings.Contains(string(got), want) {
 			t.Errorf("RenderCIFailurePosted() = %s, want it to contain %q", got, want)
 		}
 	}
-	for _, unwanted := range []string{"red_circle", "large_orange_circle"} {
-		if strings.Contains(string(got), unwanted) {
-			t.Errorf("RenderCIFailurePosted() = %s, want it not to contain severity badges %q", got, unwanted)
+}
+
+// None of the four lifecycle notifications should ever carry review
+// content -- findings, severity badges, or diagnosis text stay in the
+// GitHub PR comment, not Slack.
+func TestLifecycleNotifications_NeverCarryReviewContent(t *testing.T) {
+	pr := PullRequest{Number: 6, Repo: "widgets", HTMLURL: "https://github.com/o/r/pull/6", Author: "frank", BaseRef: "main", HeadSHA: "abc1234"}
+	for name, msg := range map[string]SlackAttachmentMessage{
+		"opened":     RenderOpened(pr),
+		"closed":     RenderClosed(pr),
+		"merged":     RenderMerged(pr),
+		"ci-failure": RenderCIFailurePosted(pr),
+	} {
+		if len(msg.Attachments) != 1 || len(msg.Attachments[0].Blocks) != 3 {
+			t.Errorf("%s: expected exactly 1 attachment with 3 blocks (header, fields, button), got %+v", name, msg)
+		}
+		got, _ := json.Marshal(msg)
+		for _, unwanted := range []string{"red_circle", "orange_circle", "critical", "warning", "finding"} {
+			if strings.Contains(strings.ToLower(string(got)), unwanted) {
+				t.Errorf("%s: RenderX() = %s, want no review/severity content (%q)", name, got, unwanted)
+			}
 		}
 	}
 }

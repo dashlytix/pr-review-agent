@@ -1,7 +1,7 @@
-// Package notify sends best-effort Slack notifications for PR lifecycle
-// events (opened/closed/merged) and for the AI review comment being
-// posted. It has no GitHub-side idempotency equivalent to internal/post's
-// marker comments, so sends are single-attempt, no-retry.
+// Package notify sends best-effort Slack lifecycle notifications for PR
+// opened/closed/merged and CI-check-failed events. It has no GitHub-side
+// idempotency equivalent to internal/post's marker comments, so sends are
+// single-attempt, no-retry.
 package notify
 
 import (
@@ -16,28 +16,16 @@ import (
 
 var httpClient = &http.Client{Timeout: 10 * time.Second}
 
-// Send posts plain text to a Slack incoming webhook.
-func Send(ctx context.Context, webhookURL, text string) error {
-	return post(ctx, webhookURL, map[string]string{"text": text})
-}
-
-// SendBlocks posts a Slack Block Kit message (as built by RenderReviewPosted,
-// RenderReviewUnavailable, or RenderCIFailurePosted) to a Slack incoming
-// webhook.
-func SendBlocks(ctx context.Context, webhookURL string, msg SlackMessage) error {
-	return post(ctx, webhookURL, msg)
-}
-
-// post is the shared send path for both the legacy plain-text messages and
-// Block Kit payloads. An empty webhookURL is treated as "Slack
-// notifications disabled" and is a no-op, so callers don't each need their
-// own enabled/disabled check.
-func post(ctx context.Context, webhookURL string, payload any) error {
+// Send posts a Slack attachment-style notification (as built by one of
+// the Render* functions) to a Slack incoming webhook. An empty
+// webhookURL is treated as "Slack notifications disabled" and is a
+// no-op, so callers don't each need their own enabled/disabled check.
+func Send(ctx context.Context, webhookURL string, msg SlackAttachmentMessage) error {
 	if webhookURL == "" {
 		return nil
 	}
 
-	b, err := json.Marshal(payload)
+	b, err := json.Marshal(msg)
 	if err != nil {
 		return err
 	}

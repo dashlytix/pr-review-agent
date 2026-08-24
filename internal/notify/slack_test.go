@@ -8,9 +8,13 @@ import (
 	"testing"
 )
 
-func TestSend_PostsJSONBody(t *testing.T) {
+func testMessage() SlackAttachmentMessage {
+	return RenderOpened(PullRequest{Number: 1, Repo: "widgets", HTMLURL: "https://github.com/o/r/pull/1", Author: "alice"})
+}
+
+func TestSend_PostsJSONAttachmentBody(t *testing.T) {
 	var gotContentType string
-	var gotBody map[string]string
+	var gotBody SlackAttachmentMessage
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotContentType = r.Header.Get("Content-Type")
 		json.NewDecoder(r.Body).Decode(&gotBody)
@@ -18,15 +22,15 @@ func TestSend_PostsJSONBody(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if err := Send(context.Background(), server.URL, "hello slack"); err != nil {
+	if err := Send(context.Background(), server.URL, testMessage()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	if gotContentType != "application/json" {
 		t.Errorf("Content-Type = %q, want application/json", gotContentType)
 	}
-	if gotBody["text"] != "hello slack" {
-		t.Errorf("posted body = %v, want {text: hello slack}", gotBody)
+	if len(gotBody.Attachments) != 1 || gotBody.Attachments[0].Color != colorOpened {
+		t.Errorf("posted body = %+v, want the rendered attachment with color %q", gotBody, colorOpened)
 	}
 }
 
@@ -37,7 +41,7 @@ func TestSend_NonOKStatusIsError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	err := Send(context.Background(), server.URL, "hello slack")
+	err := Send(context.Background(), server.URL, testMessage())
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -50,7 +54,7 @@ func TestSend_EmptyWebhookURLIsNoop(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if err := Send(context.Background(), "", "hello slack"); err != nil {
+	if err := Send(context.Background(), "", testMessage()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if calls != 0 {
