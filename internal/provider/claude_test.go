@@ -160,39 +160,46 @@ func TestClaudeProvider_Assess_JoinsMultipleTextBlocks(t *testing.T) {
 	}
 }
 
-const validReviewFindingJSON = `[{"file":"a.go","line":1,"category":"correctness","severity":"P2","comment":"off-by-one","suggested_fix":"use <=","confidence":"medium","anchored":true}]`
+const validReviewResultJSON = `{"summary":"Fixes an off-by-one in the pagination helper.","findings":[{"file":"a.go","line":1,"category":"correctness","severity":"P2","comment":"off-by-one","suggested_fix":"use <=","confidence":"medium","anchored":true}]}`
 
 func TestClaudeProvider_Review_Success(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(claudeTextResponse(validReviewFindingJSON))
+		json.NewEncoder(w).Encode(claudeTextResponse(validReviewResultJSON))
 	}))
 	defer server.Close()
 
 	p := newTestClaudeProvider(server)
-	findings, err := p.Review(context.Background(), assess.AssessmentRequest{})
+	result, err := p.Review(context.Background(), assess.AssessmentRequest{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(findings) != 1 || findings[0].Category != "correctness" {
-		t.Errorf("got %+v", findings)
+	if result.Summary == "" {
+		t.Error("expected a non-empty Summary")
+	}
+	if len(result.Findings) != 1 || result.Findings[0].Category != "correctness" {
+		t.Errorf("got %+v", result.Findings)
 	}
 }
 
-// An empty array is the common, valid "no issues found" result for the
-// review path — unlike Assess, it must not be treated as malformed.
-func TestClaudeProvider_Review_EmptyArrayIsValid(t *testing.T) {
+// An empty findings array is the common, valid "no issues found" result
+// for the review path — unlike Assess, it must not be treated as
+// malformed. Summary is still mandatory even when findings is empty.
+func TestClaudeProvider_Review_EmptyFindingsArrayIsValid(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(claudeTextResponse("[]"))
+		json.NewEncoder(w).Encode(claudeTextResponse(`{"summary":"Adds a health-check endpoint.","findings":[]}`))
 	}))
 	defer server.Close()
 
 	p := newTestClaudeProvider(server)
-	findings, err := p.Review(context.Background(), assess.AssessmentRequest{})
+	result, err := p.Review(context.Background(), assess.AssessmentRequest{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(findings) != 0 {
-		t.Errorf("expected 0 findings, got %+v", findings)
+	if len(result.Findings) != 0 {
+		t.Errorf("expected 0 findings, got %+v", result.Findings)
+	}
+	if result.Summary == "" {
+		t.Error("expected a non-empty Summary even with zero findings")
 	}
 }
 
@@ -203,17 +210,17 @@ func TestClaudeProvider_Review_RepairsMalformedFirstResponse(t *testing.T) {
 			json.NewEncoder(w).Encode(claudeTextResponse("not json at all, sorry"))
 			return
 		}
-		json.NewEncoder(w).Encode(claudeTextResponse(validReviewFindingJSON))
+		json.NewEncoder(w).Encode(claudeTextResponse(validReviewResultJSON))
 	}))
 	defer server.Close()
 
 	p := newTestClaudeProvider(server)
-	findings, err := p.Review(context.Background(), assess.AssessmentRequest{})
+	result, err := p.Review(context.Background(), assess.AssessmentRequest{})
 	if err != nil {
 		t.Fatalf("expected the repair attempt to succeed, got error: %v", err)
 	}
-	if len(findings) != 1 {
-		t.Errorf("got %+v", findings)
+	if len(result.Findings) != 1 {
+		t.Errorf("got %+v", result.Findings)
 	}
 	if calls != 2 {
 		t.Errorf("expected exactly 2 calls (initial + one repair), got %d", calls)

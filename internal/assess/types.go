@@ -49,3 +49,13 @@ var ValidCategories = map[string]bool{
 	"style":       true,
 	"performance": true,
 }
+
+// ReviewResult is the plain PR-review path's response shape: a
+// plain-language description of what the PR does, generated in the same
+// pass as its findings (no second LLM call) rather than derived from
+// them -- Summary describes the change itself, not a restatement of the
+// findings below it.
+type ReviewResult struct {
+	Summary  string       `json:"summary"`
+	Findings []Assessment `json:"findings"`
+}

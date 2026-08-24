@@ -15,12 +15,14 @@ import (
 	"github.com/dimension/ai-ci-agent/internal/assess"
 )
 
-// AssessmentRequest and Assessment are defined in internal/assess (which
-// both concrete providers call into for prompt building and parsing) and
-// re-exported here as aliases so callers can write provider.Assessment
-// per §4.2 without depending on the internal split.
+// AssessmentRequest, Assessment, and ReviewResult are defined in
+// internal/assess (which both concrete providers call into for prompt
+// building and parsing) and re-exported here as aliases so callers can
+// write provider.Assessment per §4.2 without depending on the internal
+// split.
 type AssessmentRequest = assess.AssessmentRequest
 type Assessment = assess.Assessment
+type ReviewResult = assess.ReviewResult
 
 // Provider is the single interface both ClaudeProvider and OpenAIProvider
 // implement, per §4.2. Assess returns a slice rather than a single
@@ -28,12 +30,13 @@ type Assessment = assess.Assessment
 // additional review findings spotted in the same diff.
 //
 // Review drives the separate plain-PR-review path (the pull_request
-// opened/synchronize trigger, independent of any CI outcome): no
-// category is mandatory, and an empty slice is the common "no issues
-// found" result.
+// opened/synchronize trigger, independent of any CI outcome): no finding
+// category is mandatory, and an empty Findings slice is the common "no
+// issues found" result. ReviewResult.Summary is generated in the same
+// call as Findings, not a second one.
 type Provider interface {
 	Assess(ctx context.Context, req AssessmentRequest) ([]Assessment, error)
-	Review(ctx context.Context, req AssessmentRequest) ([]Assessment, error)
+	Review(ctx context.Context, req AssessmentRequest) (ReviewResult, error)
 }
 
 // envOr reads an environment variable, falling back to def when unset or
