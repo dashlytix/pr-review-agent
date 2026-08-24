@@ -36,10 +36,15 @@ jobs:
       - uses: ./
         with:
           llm-provider: claude
-          # Calls Anthropic's API directly -- the exe.dev gateway
-          # (llm.int.exe.xyz) returns 402 "LLM credits exhausted" for
-          # this account, so llm-base-url is left unset to fall back to
-          # https://api.anthropic.com.
+          # llm-base-url is deliberately left unset: with no explicit
+          # gateway named, ClaudeProvider's own two-tier default kicks
+          # in (internal/provider/provider.go) -- try the llm-2 exe-llm
+          # gateway first (implicit, VM-tag-scoped credentials), falling
+          # back to calling Anthropic directly with this LLM_API_KEY
+          # secret on a tier-1-specific failure (401/402/403 or
+          # unreachable). Setting llm-base-url here would disable that
+          # fallback chain entirely, per the "explicit override wins"
+          # precedent in internal/provider.
           llm-api-key: ${{ secrets.LLM_API_KEY }}
           llm-model: claude-opus-5
           slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
