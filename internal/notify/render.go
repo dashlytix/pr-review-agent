@@ -1,9 +1,14 @@
 package notify
 
-import "fmt"
+import (
+	"fmt"
+	"regexp"
+	"strings"
+)
 
 // PullRequest carries the fields a Slack lifecycle notification needs.
-// BaseRef/HeadSHA are only used by RenderMerged's Commit field.
+// BaseRef/HeadSHA are only used by RenderMerged's Commit field; Body is
+// only used by RenderOpened's Summary field.
 type PullRequest struct {
 	Number  int
 	HTMLURL string
@@ -11,6 +16,7 @@ type PullRequest struct {
 	Repo    string
 	BaseRef string
 	HeadSHA string
+	Body    string
 }
 
 // SlackAttachmentMessage is a Slack incoming-webhook payload using a
@@ -56,9 +62,17 @@ const (
 	colorCIFailed = "#ECB22E"
 )
 
-// RenderOpened builds the Slack notification for a newly opened PR.
+// RenderOpened builds the Slack notification for a newly opened PR,
+// adding a Summary field excerpted from the PR's own description
+// (pull_request.body) when one is present. That excerpt is the author's
+// own text from the webhook payload -- never the AI review agent's
+// output, and never an LLM call.
 func RenderOpened(pr PullRequest) SlackAttachmentMessage {
-	return lifecycleAttachment(colorOpened, "PR opened", "Opened", pr)
+	var extra []SlackText
+	if excerpt := summaryExcerpt(pr.Body); excerpt != "" {
+		extra = append(extra, SlackText{Type: "mrkdwn", Text: fmt.Sprintf("*Summary:*\n%s", excerpt)})
+	}
+	return lifecycleAttachment(colorOpened, "PR opened", "Opened", pr, extra...)
 }
 
 // RenderClosed builds the Slack notification for a PR closed without
@@ -113,4 +127,97 @@ func shortSHA(sha string) string {
 		return sha[:7]
 	}
 	return sha
+}
+
+// maxSummaryExcerptRunes caps the "Summary" field's rendered length to
+// roughly match Slack's own compact-card conventions.
+const maxSummaryExcerptRunes = 200
+
+// maxSummaryExcerptLines caps how many lines/bullets the excerpt pulls,
+// whether from a "Summary" section or the body's own start.
+const maxSummaryExcerptLines = 3
+
+var summaryHeadingPattern = regexp.MustCompile(`(?i)^#{0,6}\s*summary\s*:?\s*$`)
+
+// summaryExcerpt pulls a short excerpt from a PR's own description
+// (pull_request.body straight off the webhook payload -- never the AI
+// review agent's output, and never an LLM call) for the "PR opened"
+// Slack card's Summary field. It prefers the first few lines under a
+// "Summary"/"## Summary" heading when the body has one, falling back to
+// the body's own first few lines otherwise. Returns "" for an empty (or
+// heading-only, content-free) body, so RenderOpened omits the field
+// entirely instead of showing "Summary: (none)".
+func summaryExcerpt(body string) string {
+	lines := strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n")
+
+	if start := indexAfterSummaryHeading(lines); start >= 0 {
+		if excerpt := collectSectionLines(lines[start:], maxSummaryExcerptLines); excerpt != "" {
+			return truncateExcerpt(excerpt)
+		}
+	}
+	return truncateExcerpt(collectBodyLines(lines, maxSummaryExcerptLines))
+}
+
+// indexAfterSummaryHeading returns the index of the first line after a
+// "Summary" heading (bare or "## Summary"-style), or -1 if none exists.
+func indexAfterSummaryHeading(lines []string) int {
+	for i, line := range lines {
+		if summaryHeadingPattern.MatchString(strings.TrimSpace(line)) {
+			return i + 1
+		}
+	}
+	return -1
+}
+
+// collectSectionLines collects up to n non-empty lines from the start of
+// a section, stopping at the next markdown heading so the excerpt
+// doesn't bleed into the next section (e.g. "## Test plan").
+func collectSectionLines(lines []string, n int) string {
+	var collected []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			break
+		}
+		if trimmed == "" {
+			continue
+		}
+		collected = append(collected, trimmed)
+		if len(collected) == n {
+			break
+		}
+	}
+	return strings.Join(collected, "\n")
+}
+
+// collectBodyLines collects up to n non-empty, non-heading lines from
+// anywhere in the body, for the no-preferred-section fallback (no
+// "Summary" heading at all, or one whose own section came up empty).
+// Heading lines are skipped rather than treated as a stop boundary here,
+// since there's no specific section being excerpted.
+func collectBodyLines(lines []string, n int) string {
+	var collected []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		collected = append(collected, trimmed)
+		if len(collected) == n {
+			break
+		}
+	}
+	return strings.Join(collected, "\n")
+}
+
+func truncateExcerpt(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) > maxSummaryExcerptRunes {
+		return string(r[:maxSummaryExcerptRunes]) + "…"
+	}
+	return s
 }

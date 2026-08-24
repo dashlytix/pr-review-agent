@@ -69,6 +69,7 @@ type pullRequestEvent struct {
 	PullRequest struct {
 		Number  int    `json:"number"`
 		HTMLURL string `json:"html_url"`
+		Body    string `json:"body"`
 		User    struct {
 			Login string `json:"login"`
 		} `json:"user"`
@@ -208,6 +209,7 @@ func handlePullRequestEvent(ctx context.Context, event *pullRequestEvent, repo, 
 		Repo:    repo,
 		BaseRef: pr.Base.Ref,
 		HeadSHA: pr.Head.SHA,
+		Body:    pr.Body,
 	}
 
 	var msg notify.SlackAttachmentMessage

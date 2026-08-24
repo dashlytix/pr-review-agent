@@ -110,7 +110,9 @@ unset, none of this fires and the rest of the action behaves exactly as document
 left border renders), no retry, for four lifecycle events only — never review content,
 findings, or diagnosis text, which stay in the GitHub PR comment posted separately:
 
-- **PR opened** — blue border.
+- **PR opened** — blue border, plus a Summary field excerpted from the PR's own
+  `pull_request.body` (the author's description, not AI output, and not an LLM call) — see
+  below.
 - **PR merged** — green border, plus a Commit field (short SHA + base branch).
 - **PR closed without merging** — red border.
 - **CI check failed** — orange border, on the `workflow_run` failure path (right after
@@ -118,7 +120,14 @@ findings, or diagnosis text, which stay in the GitHub PR comment posted separate
   passing CI run's templated comment.
 
 Each card is a single attachment: a header/subtitle section, a Status field (plus Commit for
-the merged case), and a "View PR" button linking to the PR's `html_url`.
+the merged case, or Summary for the opened case), and a "View PR" button linking to the PR's
+`html_url`.
+
+`notify.summaryExcerpt` builds the opened card's Summary field: it prefers the first few
+lines under a `## Summary`/`Summary` heading if the PR body has one (stopping before the
+next heading), falls back to the body's own first few lines otherwise, and is truncated to
+~200 characters with a trailing `…`. An empty PR description omits the field entirely rather
+than rendering "Summary: (none)".
 
 A consuming workflow needs a second trigger alongside the existing `workflow_run`/
 `schedule` ones to get the PR-lifecycle notifications:
