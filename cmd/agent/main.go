@@ -152,7 +152,7 @@ func run() error {
 		}
 		client := ghclient.New(token, owner, repo)
 		pr := event.PullRequest
-		return reviewPR(ctx, client, llmProvider, pr.Number, pr.HTMLURL, pr.Title, pr.Head.SHA, slackWebhookURL)
+		return reviewPR(ctx, client, llmProvider, pr.Number, pr.HTMLURL, pr.User.Login, repo, pr.Head.SHA, slackWebhookURL)
 	}
 
 	// The remaining paths (schedule, workflow_run) drive an LLM
@@ -169,7 +169,7 @@ func run() error {
 	client := ghclient.New(token, owner, repo)
 
 	if eventName == "schedule" {
-		return reconcile(ctx, client, llmProvider, slackWebhookURL)
+		return reconcile(ctx, client, llmProvider, repo, slackWebhookURL)
 	}
 
 	event, err := loadWorkflowRunEvent(eventPath)
@@ -186,7 +186,7 @@ func run() error {
 		prNumber = event.WorkflowRun.PullRequests[0].Number
 	}
 
-	return investigate(ctx, client, llmProvider, event.WorkflowRun.ID, prNumber, slackWebhookURL)
+	return investigate(ctx, client, llmProvider, event.WorkflowRun.ID, prNumber, repo, slackWebhookURL)
 }
 
 // buildProvider resolves a Provider from action inputs, shared by every
@@ -247,7 +247,7 @@ func handlePullRequestEvent(ctx context.Context, event *pullRequestEvent, slackW
 // workflow run. Every failure mode past this point (§7) degrades to a
 // posted comment rather than a non-zero exit — only the config checks in
 // run() are treated as fatal.
-func investigate(ctx context.Context, client *ghclient.Client, llmProvider provider.Provider, runID int64, prNumber int, slackWebhookURL string) error {
+func investigate(ctx context.Context, client *ghclient.Client, llmProvider provider.Provider, runID int64, prNumber int, repo, slackWebhookURL string) error {
 	result, gatherErr := gather.Gather(ctx, client, runID, prNumber)
 	if result == nil {
 		if gatherErr == nil {
@@ -295,7 +295,11 @@ func investigate(ctx context.Context, client *ghclient.Client, llmProvider provi
 		// and skipped (with a re-post never re-attempted) once already
 		// posted, so a reconcile pass never double-pings Slack.
 		if metaErr == nil {
-			if err := notify.Send(ctx, slackWebhookURL, notify.RenderAssessmentPosted(meta.Title, meta.HTMLURL, url)); err != nil {
+			msg := notify.RenderCIFailurePosted(
+				notify.PullRequest{Number: result.PRNumber, Repo: repo, HTMLURL: meta.HTMLURL, Author: meta.User.Login},
+				ciFailureSummary(findings),
+			)
+			if err := notify.SendBlocks(ctx, slackWebhookURL, msg); err != nil {
 				log.Printf("warning: slack notification failed: %v", err)
 			}
 		}
@@ -313,7 +317,7 @@ func investigate(ctx context.Context, client *ghclient.Client, llmProvider provi
 // uses PostReview/reviewMarker, a distinct marker from investigate()'s,
 // so a review comment and a CI-failure comment on the same commit SHA
 // never collide in the idempotency lookup.
-func reviewPR(ctx context.Context, client *ghclient.Client, llmProvider provider.Provider, prNumber int, htmlURL, title, headSHA, slackWebhookURL string) error {
+func reviewPR(ctx context.Context, client *ghclient.Client, llmProvider provider.Provider, prNumber int, htmlURL, author, repo, headSHA, slackWebhookURL string) error {
 	req, gatherErr := gather.GatherForReview(ctx, client, prNumber)
 
 	var findings []provider.Assessment
@@ -334,7 +338,18 @@ func reviewPR(ctx context.Context, client *ghclient.Client, llmProvider provider
 	}
 
 	log.Printf("pr %d: posted review: %s", prNumber, url)
-	if err := notify.Send(ctx, slackWebhookURL, notify.RenderAssessmentPosted(title, htmlURL, url)); err != nil {
+	pr := notify.PullRequest{Number: prNumber, Repo: repo, HTMLURL: htmlURL, Author: author}
+	var msg notify.SlackMessage
+	if assessErr != nil {
+		// A review that never ran (LLM outage, rate limit, malformed
+		// output) must not be reported the same way as a clean one --
+		// RenderReviewPosted with zero findings would otherwise read as
+		// "no issues found".
+		msg = notify.RenderReviewUnavailable(pr, reviewUnavailableReason(assessErr))
+	} else {
+		msg = notify.RenderReviewPosted(pr, toNotifyFindings(findings))
+	}
+	if err := notify.SendBlocks(ctx, slackWebhookURL, msg); err != nil {
 		log.Printf("warning: slack notification failed: %v", err)
 	}
 	return nil
@@ -364,7 +379,7 @@ func renderReviewBody(assessErr error, findings []provider.Assessment, headSHA s
 
 // reconcile is the §7 backstop for a dropped webhook: sweep recent
 // failed runs and catch up any still missing a marker comment.
-func reconcile(ctx context.Context, client *ghclient.Client, llmProvider provider.Provider, slackWebhookURL string) error {
+func reconcile(ctx context.Context, client *ghclient.Client, llmProvider provider.Provider, repo, slackWebhookURL string) error {
 	runs, err := gather.RecentFailedRuns(ctx, client, reconcileRunLimit)
 	if err != nil {
 		return fmt.Errorf("reconcile: list recent failed runs: %w", err)
@@ -389,7 +404,7 @@ func reconcile(ctx context.Context, client *ghclient.Client, llmProvider provide
 		}
 
 		log.Printf("reconcile: run %d has no marker comment yet, catching up", r.ID)
-		if err := investigate(ctx, client, llmProvider, r.ID, result.PRNumber, slackWebhookURL); err != nil {
+		if err := investigate(ctx, client, llmProvider, r.ID, result.PRNumber, repo, slackWebhookURL); err != nil {
 			log.Printf("reconcile: run %d: %v", r.ID, err)
 		}
 	}
@@ -415,6 +430,67 @@ func renderBody(assessErr error, findings []provider.Assessment, result *gather.
 		log.Printf("provider unavailable: %v", assessErr)
 		return post.RenderFallback(result.RunHTMLURL, result.HeadSHA)
 	}
+}
+
+// reviewUnavailableReason turns the review path's degrade-gracefully
+// error (§7) into a short, human-readable reason for the Slack card,
+// mirroring renderReviewBody's cases without the full markdown wrapping.
+func reviewUnavailableReason(assessErr error) string {
+	switch {
+	case errors.Is(assessErr, assess.ErrMalformed):
+		return "the model's output could not be parsed as a valid review, even after one repair attempt"
+	case isRateLimited(assessErr):
+		return "the GitHub API rate limit was hit while gathering the diff"
+	default:
+		return "the LLM provider was unavailable or timed out"
+	}
+}
+
+// findingTitle collapses a finding's prose Comment into a short,
+// single-line title for the compact Slack card -- Assessment has no
+// dedicated title field.
+func findingTitle(a provider.Assessment) string {
+	c := strings.TrimSpace(a.Comment)
+	if c == "" {
+		return fmt.Sprintf("%s finding in %s", a.Category, a.File)
+	}
+	if i := strings.IndexAny(c, ".\n"); i > 0 && i < 100 {
+		c = c[:i]
+	}
+	const maxTitleRunes = 80
+	r := []rune(c)
+	if len(r) > maxTitleRunes {
+		return string(r[:maxTitleRunes]) + "…"
+	}
+	return c
+}
+
+// toNotifyFindings converts assessment findings to the shape
+// notify.RenderReviewPosted needs, bucketing P0 as critical and
+// everything else as warning -- P0 is documented (see internal/assess) as
+// reserved for a security-relevant break, the other four levels aren't
+// distinguished by the Slack card's two badges.
+func toNotifyFindings(findings []provider.Assessment) []notify.Finding {
+	out := make([]notify.Finding, 0, len(findings))
+	for _, a := range findings {
+		out = append(out, notify.Finding{Title: findingTitle(a), Critical: a.Severity == "P0"})
+	}
+	return out
+}
+
+// ciFailureSummary pulls the mandatory ci-failure finding's diagnosis for
+// the Slack CI-failure card, falling back to a generic line when no
+// findings were produced (e.g. the malformed/fallback paths).
+func ciFailureSummary(findings []provider.Assessment) string {
+	for _, a := range findings {
+		if a.Category == "ci-failure" {
+			return a.Comment
+		}
+	}
+	if len(findings) > 0 {
+		return findings[0].Comment
+	}
+	return "The AI CI agent posted a diagnosis of this failure."
 }
 
 func isRateLimited(err error) bool {
