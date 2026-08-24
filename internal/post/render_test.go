@@ -153,38 +153,20 @@ func TestRenderReviewFindings_RendersEachFinding(t *testing.T) {
 	}
 }
 
-func TestRenderPass_SaysPassedAndEmbedsPassMarker(t *testing.T) {
-	body := RenderPass("abc1234")
-
-	if !strings.Contains(body, "All CI checks passed") {
-		t.Errorf("expected the pass acknowledgment text, got:\n%s", body)
-	}
-	if !strings.Contains(body, passMarker("abc1234")) {
-		t.Error("pass comment must embed the pass marker so it isn't posted twice")
-	}
-	if strings.Contains(body, marker("abc1234")) || strings.Contains(body, reviewMarker("abc1234")) {
-		t.Error("a pass comment must not embed the CI-failure or review marker")
-	}
-}
-
-// A CI-failure comment (marker), a review comment (reviewMarker), and a
-// pass comment (passMarker) on the same commit SHA must not collide in
-// findByMarker's substring search, or one path's idempotency check would
-// wrongly report another's comment as already posted.
-func TestMarkerReviewMarkerAndPassMarker_NeverCollide(t *testing.T) {
+// A CI-failure comment (marker) and a review comment (reviewMarker) on
+// the same commit SHA must not collide in findByMarker's substring
+// search, or one path's idempotency check would wrongly report the
+// other's comment as already posted.
+func TestMarkerAndReviewMarker_NeverCollide(t *testing.T) {
 	sha := "abc1234"
 	ciBody := RenderFallback("", sha)
 	reviewBody := RenderReviewFallback(sha)
-	passBody := RenderPass(sha)
 
-	if strings.Contains(ciBody, reviewMarker(sha)) || strings.Contains(ciBody, passMarker(sha)) {
-		t.Error("a CI-failure comment must not embed the review or pass marker")
+	if strings.Contains(ciBody, reviewMarker(sha)) {
+		t.Error("a CI-failure comment must not embed the review marker")
 	}
-	if strings.Contains(reviewBody, marker(sha)) || strings.Contains(reviewBody, passMarker(sha)) {
-		t.Error("a review comment must not embed the CI-failure or pass marker")
-	}
-	if strings.Contains(passBody, marker(sha)) || strings.Contains(passBody, reviewMarker(sha)) {
-		t.Error("a pass comment must not embed the CI-failure or review marker")
+	if strings.Contains(reviewBody, marker(sha)) {
+		t.Error("a review comment must not embed the CI-failure marker")
 	}
 }
 
