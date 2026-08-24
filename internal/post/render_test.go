@@ -84,25 +84,25 @@ func TestRenderAssessmentReview_StaleHeadDropsAllAnchorsAndNotesBothSHAs(t *test
 	}
 }
 
-func TestRenderFallback_LinksRunAndEmbedsMarker(t *testing.T) {
-	body := RenderFallback("https://github.com/o/r/actions/runs/123", "abc1234")
+func TestRenderFallback_LinksRunAndEmbedsNoMarker(t *testing.T) {
+	body := RenderFallback("https://github.com/o/r/actions/runs/123")
 
 	if !strings.Contains(body, "https://github.com/o/r/actions/runs/123") {
 		t.Errorf("expected the raw run URL to be linked, got:\n%s", body)
 	}
-	if !strings.Contains(body, marker("abc1234")) {
-		t.Error("fallback comment must still embed the marker so it isn't posted twice")
+	if strings.Contains(body, "ai-ci-agent:marker") {
+		t.Error("a degraded fallback post must not embed the marker -- it isn't a completed review, and embedding it would permanently block a later successful retry for this commit")
 	}
 }
 
-func TestRenderMinimal_IncludesReasonAndMarker(t *testing.T) {
-	body := RenderMinimal("the GitHub API rate limit was hit while gathering context", "abc1234")
+func TestRenderMinimal_IncludesReasonAndNoMarker(t *testing.T) {
+	body := RenderMinimal("the GitHub API rate limit was hit while gathering context")
 
 	if !strings.Contains(body, "rate limit") {
 		t.Errorf("expected the reason to be rendered, got:\n%s", body)
 	}
-	if !strings.Contains(body, marker("abc1234")) {
-		t.Error("minimal comment must still embed the marker so it isn't posted twice")
+	if strings.Contains(body, "ai-ci-agent:marker") {
+		t.Error("a degraded minimal post must not embed the marker, for the same reason as RenderFallback")
 	}
 }
 
@@ -142,20 +142,39 @@ func TestRenderReviewReview_AnchoredFindingsBecomeInlineComments(t *testing.T) {
 	}
 }
 
-// A CI-failure review (marker) and a plain-review review (reviewMarker)
-// on the same commit SHA must not collide in findReviewByMarker's
-// substring search, or one path's idempotency check would wrongly report
-// the other's review as already posted.
+// A completed CI-failure review (marker) and a completed plain-review
+// review (reviewMarker) on the same commit SHA must not collide in
+// findReviewByMarker's substring search, or one path's idempotency check
+// would wrongly report the other's review as already posted.
 func TestMarkerAndReviewMarker_NeverCollide(t *testing.T) {
 	sha := "abc1234"
-	ciBody := RenderFallback("", sha)
-	reviewBody := RenderReviewFallback(sha)
+	ciFinding := []provider.Assessment{{Category: "ci-failure", Severity: "P1", Confidence: "high", Comment: "x"}}
+	ciBody, _ := RenderAssessmentReview(ciFinding, sha, "")
+	reviewBody, _ := RenderReviewReview(nil, sha)
 
 	if strings.Contains(ciBody, reviewMarker(sha)) {
 		t.Error("a CI-failure review must not embed the review marker")
 	}
 	if strings.Contains(reviewBody, marker(sha)) {
 		t.Error("a plain-review review must not embed the CI-failure marker")
+	}
+}
+
+// A degraded post (provider outage, rate limit, malformed output) must
+// never embed either marker -- see RenderReviewFallback's doc comment for
+// why a degraded post has to stay retryable rather than sealing the
+// commit against a later successful attempt.
+func TestDegradedRenders_EmbedNoMarkerEither(t *testing.T) {
+	sha := "abc1234"
+	for name, body := range map[string]string{
+		"RenderFallback":       RenderFallback("https://x"),
+		"RenderMinimal":        RenderMinimal("reason"),
+		"RenderReviewFallback": RenderReviewFallback(),
+		"RenderReviewMinimal":  RenderReviewMinimal("reason"),
+	} {
+		if strings.Contains(body, marker(sha)) || strings.Contains(body, reviewMarker(sha)) || strings.Contains(body, "ai-ci-agent:") {
+			t.Errorf("%s = %q, want no marker of any kind embedded", name, body)
+		}
 	}
 }
 

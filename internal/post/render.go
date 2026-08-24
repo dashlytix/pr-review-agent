@@ -177,46 +177,53 @@ func inlineCommentBody(a provider.Assessment, emoji string) string {
 // path -- there's no CI run/raw-logs link to point to here, so the
 // message just names the outage. No findings exist in this degrade case,
 // so callers pass nil comments alongside this string.
-func RenderReviewFallback(sha string) string {
+//
+// Deliberately embeds no marker: a degraded post is not a completed
+// review, so it must never make Post/PostReview's idempotency lookup
+// treat this commit as already handled. Without this, one transient
+// failure (a rate limit, a provider hiccup) would permanently seal that
+// commit against ever getting a real review, even after the root cause
+// is fixed -- every later run would just see "already posted" and skip.
+// The trade-off is that a persistent failure reposts a fresh fallback
+// comment on every retrigger/reconcile sweep instead of going quiet
+// after one.
+func RenderReviewFallback() string {
 	var b strings.Builder
 	b.WriteString("### 🤖 AI PR Review\n\n")
 	b.WriteString("The LLM provider was unavailable or timed out, so no automated review could be generated for this PR.\n\n")
-	b.WriteString(reviewMarker(sha))
 	return b.String()
 }
 
-// RenderReviewMinimal is RenderMinimal's counterpart for the review path,
-// using reviewMarker so the review is found by PostReview's idempotency
-// check rather than Post's.
-func RenderReviewMinimal(reason, sha string) string {
+// RenderReviewMinimal is RenderMinimal's counterpart for the review path.
+// See RenderReviewFallback for why it embeds no marker.
+func RenderReviewMinimal(reason string) string {
 	var b strings.Builder
 	b.WriteString("### 🤖 AI PR Review\n\n")
 	fmt.Fprintf(&b, "Unable to produce a full review for this PR: %s\n\n", reason)
-	b.WriteString(reviewMarker(sha))
 	return b.String()
 }
 
 // RenderFallback covers §7's "LLM provider unavailable or times out":
 // post a fallback review body linking the raw logs and exit non-fatally.
-func RenderFallback(runHTMLURL, sha string) string {
+// See RenderReviewFallback for why it embeds no marker.
+func RenderFallback(runHTMLURL string) string {
 	var b strings.Builder
 	b.WriteString("### 🤖 AI CI Agent\n\n")
 	b.WriteString("The LLM provider was unavailable or timed out, so no automated investigation could be generated for this failure.\n\n")
 	if runHTMLURL != "" {
 		fmt.Fprintf(&b, "Raw logs: %s\n\n", runHTMLURL)
 	}
-	b.WriteString(marker(sha))
 	return b.String()
 }
 
 // RenderMinimal covers the other §7 fallback paths: rate limiting
 // exhausted, or the assessment stayed malformed after the bounded repair
-// attempt. reason is a short, human-readable explanation.
-func RenderMinimal(reason, sha string) string {
+// attempt. reason is a short, human-readable explanation. See
+// RenderReviewFallback for why it embeds no marker.
+func RenderMinimal(reason string) string {
 	var b strings.Builder
 	b.WriteString("### 🤖 AI CI Agent\n\n")
 	fmt.Fprintf(&b, "Unable to produce a full investigation for this failure: %s\n\n", reason)
-	b.WriteString(marker(sha))
 	return b.String()
 }
 

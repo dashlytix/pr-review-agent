@@ -347,15 +347,15 @@ func renderReviewSummary(assessErr error, findings []provider.Assessment, headSH
 
 	case errors.Is(assessErr, assess.ErrMalformed):
 		log.Printf("review malformed after repair attempt: %v", assessErr)
-		return post.RenderReviewMinimal("the model's output could not be parsed as a valid review, even after one repair attempt", headSHA), nil
+		return post.RenderReviewMinimal("the model's output could not be parsed as a valid review, even after one repair attempt"), nil
 
 	case isRateLimited(assessErr):
 		log.Printf("rate limited: %v", assessErr)
-		return post.RenderReviewMinimal("the GitHub API rate limit was hit while gathering the diff", headSHA), nil
+		return post.RenderReviewMinimal("the GitHub API rate limit was hit while gathering the diff"), nil
 
 	default:
 		log.Printf("provider unavailable: %v", assessErr)
-		return post.RenderReviewFallback(headSHA), nil
+		return post.RenderReviewFallback(), nil
 	}
 }
 
@@ -404,15 +404,15 @@ func renderReview(assessErr error, findings []provider.Assessment, result *gathe
 
 	case errors.Is(assessErr, assess.ErrMalformed):
 		log.Printf("assessment malformed after repair attempt: %v", assessErr)
-		return post.RenderMinimal("the model's output could not be parsed as a valid assessment, even after one repair attempt", result.HeadSHA), nil
+		return post.RenderMinimal("the model's output could not be parsed as a valid assessment, even after one repair attempt"), nil
 
 	case isRateLimited(assessErr):
 		log.Printf("rate limited: %v", assessErr)
-		return post.RenderMinimal("the GitHub API rate limit was hit while gathering context", result.HeadSHA), nil
+		return post.RenderMinimal("the GitHub API rate limit was hit while gathering context"), nil
 
 	default:
 		log.Printf("provider unavailable: %v", assessErr)
-		return post.RenderFallback(result.RunHTMLURL, result.HeadSHA), nil
+		return post.RenderFallback(result.RunHTMLURL), nil
 	}
 }
 
