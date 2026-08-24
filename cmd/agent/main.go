@@ -276,9 +276,9 @@ func investigate(ctx context.Context, client *ghclient.Client, llmProvider provi
 		staleHeadSHA = meta.Head.SHA
 	}
 
-	body := renderBody(assessErr, findings, result, staleHeadSHA)
+	summary, comments := renderReview(assessErr, findings, result, staleHeadSHA)
 
-	url, alreadyPosted, err := post.Post(ctx, client, result.PRNumber, result.HeadSHA, body)
+	url, alreadyPosted, err := post.Post(ctx, client, result.PRNumber, result.HeadSHA, summary, comments)
 	if err != nil {
 		return fmt.Errorf("post: %w", err)
 	}
@@ -301,7 +301,7 @@ func investigate(ctx context.Context, client *ghclient.Client, llmProvider provi
 	}
 
 	writeOutput("comment-url", url)
-	writeOutput("comment-body", body)
+	writeOutput("comment-body", summary)
 	return nil
 }
 
@@ -322,9 +322,9 @@ func reviewPR(ctx context.Context, client *ghclient.Client, llmProvider provider
 		findings, assessErr = llmProvider.Review(ctx, req)
 	}
 
-	body := renderReviewBody(assessErr, findings, headSHA)
+	summary, comments := renderReviewSummary(assessErr, findings, headSHA)
 
-	url, alreadyPosted, err := post.PostReview(ctx, client, prNumber, headSHA, body)
+	url, alreadyPosted, err := post.PostReview(ctx, client, prNumber, headSHA, summary, comments)
 	if err != nil {
 		return fmt.Errorf("post: %w", err)
 	}
@@ -337,25 +337,25 @@ func reviewPR(ctx context.Context, client *ghclient.Client, llmProvider provider
 	return nil
 }
 
-// renderReviewBody is renderBody's counterpart for the review path: the
-// same §7 degrade-gracefully cases, minus the fallback's raw-logs link
-// (there's no CI run here to link to).
-func renderReviewBody(assessErr error, findings []provider.Assessment, headSHA string) string {
+// renderReviewSummary is renderReview's counterpart for the review path:
+// the same §7 degrade-gracefully cases, minus the fallback's raw-logs
+// link (there's no CI run here to link to).
+func renderReviewSummary(assessErr error, findings []provider.Assessment, headSHA string) (string, []post.ReviewComment) {
 	switch {
 	case assessErr == nil:
-		return post.RenderReviewFindings(findings, headSHA)
+		return post.RenderReviewReview(findings, headSHA)
 
 	case errors.Is(assessErr, assess.ErrMalformed):
 		log.Printf("review malformed after repair attempt: %v", assessErr)
-		return post.RenderReviewMinimal("the model's output could not be parsed as a valid review, even after one repair attempt", headSHA)
+		return post.RenderReviewMinimal("the model's output could not be parsed as a valid review, even after one repair attempt", headSHA), nil
 
 	case isRateLimited(assessErr):
 		log.Printf("rate limited: %v", assessErr)
-		return post.RenderReviewMinimal("the GitHub API rate limit was hit while gathering the diff", headSHA)
+		return post.RenderReviewMinimal("the GitHub API rate limit was hit while gathering the diff", headSHA), nil
 
 	default:
 		log.Printf("provider unavailable: %v", assessErr)
-		return post.RenderReviewFallback(headSHA)
+		return post.RenderReviewFallback(headSHA), nil
 	}
 }
 
@@ -393,24 +393,26 @@ func reconcile(ctx context.Context, client *ghclient.Client, llmProvider provide
 	return nil
 }
 
-// renderBody turns the outcome of the Assess call into the comment body
-// to post, applying §7's degrade-gracefully rules.
-func renderBody(assessErr error, findings []provider.Assessment, result *gather.Result, staleHeadSHA string) string {
+// renderReview turns the outcome of the Assess call into the review
+// summary + inline comments to post, applying §7's degrade-gracefully
+// rules. The three degrade cases have no structured findings to anchor,
+// so they carry nil comments alongside their plain-string summary.
+func renderReview(assessErr error, findings []provider.Assessment, result *gather.Result, staleHeadSHA string) (string, []post.ReviewComment) {
 	switch {
 	case assessErr == nil:
-		return post.RenderAssessments(findings, result.HeadSHA, staleHeadSHA)
+		return post.RenderAssessmentReview(findings, result.HeadSHA, staleHeadSHA)
 
 	case errors.Is(assessErr, assess.ErrMalformed):
 		log.Printf("assessment malformed after repair attempt: %v", assessErr)
-		return post.RenderMinimal("the model's output could not be parsed as a valid assessment, even after one repair attempt", result.HeadSHA)
+		return post.RenderMinimal("the model's output could not be parsed as a valid assessment, even after one repair attempt", result.HeadSHA), nil
 
 	case isRateLimited(assessErr):
 		log.Printf("rate limited: %v", assessErr)
-		return post.RenderMinimal("the GitHub API rate limit was hit while gathering context", result.HeadSHA)
+		return post.RenderMinimal("the GitHub API rate limit was hit while gathering context", result.HeadSHA), nil
 
 	default:
 		log.Printf("provider unavailable: %v", assessErr)
-		return post.RenderFallback(result.RunHTMLURL, result.HeadSHA)
+		return post.RenderFallback(result.RunHTMLURL, result.HeadSHA), nil
 	}
 }
 

@@ -14,7 +14,7 @@ Implementation of `ADR-001` / the accompanying Tech Spec (`AI_CI_Agent_ADR_TechS
 | `internal/gather` | §2.1, §3 | GitHub API calls for the log tail, PR diff, touched files; language-aware failure-line extraction (Go/Rust/TS/SQL, §1); `GatherForReview` skips the log tail for the review path, where no CI run exists |
 | `internal/provider` | §4.2 | `Provider` interface (`Assess` and `Review` both return `[]Assessment`), `ClaudeProvider`, `OpenAIProvider` |
 | `internal/assess` | §4.2, §6.1 | Prompt building, JSON array parsing + one bounded repair attempt, diff-anchor validation — all applied per-finding; `Review*`-prefixed prompt/parse functions serve the PR-review path, where no category is mandatory |
-| `internal/post` | §4.3, §4.4, §6.3 | Renders every finding into one comment (primary `ci-failure` finding first, any extras in an "Other findings" section), marker-based idempotency, stale-head handling; `RenderReviewFindings`/`PostReview` are the review path's counterparts, keyed by a distinct `reviewMarker` so a review comment and a CI-failure comment on the same commit never collide |
+| `internal/post` | §4.3, §4.4, §6.3 | Posts a GitHub pull request *review* per run — not a flat comment: a top-level summary (the `ci-failure` diagnosis, plus 🔴/🟡/🟢 severity counts) and one inline comment per anchored finding, at its exact `file:line`. Marker-based idempotency (against the PR's reviews, not its issue comments), stale-head handling; `RenderReviewReview`/`PostReview` are the plain-review path's counterparts, keyed by a distinct `reviewMarker` |
 | `internal/ghclient` | — | Shared GitHub REST client with retry/backoff on rate limiting (not named as its own package in the spec, but needed by both `gather` and `post`) |
 | `eval/` | §9 | Evaluation harness — 20 fixtures across the four target languages and a scoring CLI (scores the mandatory `ci-failure` finding against each fixture's known answer) |
 
@@ -24,14 +24,14 @@ The spec's §4.2 code block shows `AssessmentRequest`/`Assessment`/`Provider` al
 
 ## Why findings are one array instead of a fixed-category single object
 
-`Assessment.Category` was always documented as extensible (§4.4: "extends the review agent's existing category set (correctness, style, security, …)") — the multi-finding array is that extension actually implemented, rather than adding a second, parallel finding type. `assess.ParseAssessments` enforces exactly one `ci-failure` entry is present (the mandatory diagnosis every run produces) and validates every entry's category against `assess.ValidCategories`; `assess.ValidateAnchors` applies the same §6.1 diff-anchor guardrail to each finding independently, computing the changed-line map once rather than per finding. `post.RenderAssessments` always renders the `ci-failure` finding first and groups anything else under "Other findings" — one comment per run regardless of how many findings it carries.
+`Assessment.Category` was always documented as extensible (§4.4: "extends the review agent's existing category set (correctness, style, security, …)") — the multi-finding array is that extension actually implemented, rather than adding a second, parallel finding type. `assess.ParseAssessments` enforces exactly one `ci-failure` entry is present (the mandatory diagnosis every run produces) and validates every entry's category against `assess.ValidCategories`; `assess.ValidateAnchors` applies the same §6.1 diff-anchor guardrail to each finding independently, computing the changed-line map once rather than per finding. `post.RenderAssessmentReview` always leads with the `ci-failure` finding as the review's summary, then turns every other *anchored* finding into its own inline comment and folds anything unanchored into the summary — one GitHub review per run regardless of how many findings it carries.
 
 ## Guardrails implemented
 
-- **§6.1 diff-anchored findings** — `assess.ValidateAnchor` parses the captured unified diff (and per-file patches) into actual changed-line sets and downgrades `anchored` to `false` if the model's file/line claim doesn't fall inside them.
+- **§6.1 diff-anchored findings** — `assess.ValidateAnchor` parses the captured unified diff (and per-file patches) into actual changed-line sets and downgrades `anchored` to `false` if the model's file/line claim doesn't fall inside them. This guardrail is load-bearing now, not just cosmetic: GitHub's Reviews API rejects an inline comment on a line that isn't part of the diff, so only `anchored` findings are even eligible to become one.
 - **§6.1 posting authority before untrusted content** — the GitHub token's scope is fixed by the workflow before any log/diff/file content (all contributor-influenceable) is ever read; nothing in that content can grant itself posting authority.
-- **§6.3 idempotency** — `post.Post` looks for a hidden `<!-- ai-ci-agent:marker:sha=... -->` comment before posting; no table, no database.
-- **§6.3 stale-head handling** — the PR's current head is re-checked right before posting; if it moved, the comment is posted body-only with both SHAs called out.
+- **§6.3 idempotency** — `post.Post` looks for a hidden `<!-- ai-ci-agent:marker:sha=... -->` string in the PR's existing *reviews* before posting a new one; no table, no database.
+- **§6.3 stale-head handling** — the PR's current head is re-checked right before posting; if it moved, every finding posts as a summary bullet instead of an inline comment (an anchor computed against a diff that's no longer the head can't be trusted to land on the right line), and both SHAs are called out.
 - **§7 failure modes** — provider timeout → fallback comment linking raw logs; GitHub rate limiting → retried with backoff, then a minimal comment; malformed JSON → one bounded repair call (tools/system prompt only, no fresh context), then a minimal comment; missing provider config → fails fast instead of silently degrading.
 - **§7 reconciliation backstop** — `GITHUB_EVENT_NAME=schedule` triggers `reconcile()`, which sweeps recent failed runs for any missing a marker comment (dropped-webhook case).
 
@@ -104,11 +104,33 @@ the PR's diff, independent of whether CI has run or passed — `gather.GatherFor
 fetches just the diff and touched files (no CI run is involved, so no log tail),
 `Provider.Review` prompts with `assess.ReviewSystemPrompt` instead of `SystemPrompt` (no
 mandatory `ci-failure` finding; an empty array is the common, valid "no issues found"
-result), and `post.RenderReviewFindings`/`post.PostReview` post the result under a distinct
+result), and `post.RenderReviewReview`/`post.PostReview` post the result under a distinct
 `reviewMarker` — deliberately not the same marker `investigate()` uses, so a review comment
 and a CI-failure comment landing on the same commit SHA never shadow each other in the
-idempotency lookup. It posts a GitHub PR comment only — no Slack notification for review
-completion; see "Slack notifications" below for what Slack does get.
+idempotency lookup. It posts a GitHub pull request review only — no Slack notification for
+review completion; see "Slack notifications" below for what Slack does get.
+
+## Review shape: summary + inline comments
+
+Both entry points post a GitHub pull request **review** (`POST /pulls/{n}/reviews`), not a
+flat issue comment — the same shape GitHub Copilot's PR review uses: a top-level summary and
+one inline comment per finding, anchored directly on its diff line.
+
+- **Summary** (the review's `body`): for the CI-failure path, leads with the mandatory
+  `ci-failure` diagnosis; either path follows with a `🔴 N critical   🟡 N warning   🟢 N nit`
+  count line and a bullet per finding that didn't become an inline comment.
+- **Inline comments**: one per finding where `Anchored == true` — full category/severity/
+  confidence/comment/suggested-fix detail, posted at that exact `file:line`.
+- **Severity emoji** (`post.severityEmoji`): `P0`/`P1` → 🔴, `P2`/`P3` → 🟡, `nit` → 🟢 — the
+  same three-color signal in both the summary counts and every inline comment.
+- The review's `event` is always `"COMMENT"` — this agent reports findings, it never blocks a
+  merge (`REQUEST_CHANGES`) or grants one (`APPROVE`).
+
+Posted comments/reviews show up under whichever identity the calling workflow's
+`github-token` resolves to. Pointed at a GitHub App installation token (via
+[`actions/create-github-app-token`](https://github.com/actions/create-github-app-token))
+instead of the default `GITHUB_TOKEN`, they carry the App's own bot name and avatar instead
+of `github-actions[bot]` — no code change, just which token the workflow mints.
 
 ## Slack notifications
 
