@@ -218,6 +218,49 @@ func TestClaudeProvider_Assess_SkipsThinkingBlocks(t *testing.T) {
 	}
 }
 
+func TestClaudeProvider_Answer_ReturnsRawText(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body claudeRequest
+		json.NewDecoder(r.Body).Decode(&body)
+		if !strings.Contains(body.System, "answering a follow-up question") {
+			t.Errorf("expected AnswerSystemPrompt to be sent, got system prompt: %q", body.System)
+		}
+		if len(body.Messages) != 1 || !strings.Contains(body.Messages[0].Content, "## Question\nwhy did this fail?") {
+			t.Errorf("expected the question appended to the prompt, got: %+v", body.Messages)
+		}
+		json.NewEncoder(w).Encode(claudeTextResponse("It fails because the nil check was removed."))
+	}))
+	defer server.Close()
+
+	p := newTestClaudeProvider(server)
+	answer, err := p.Answer(context.Background(), assess.AssessmentRequest{}, "why did this fail?")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if answer != "It fails because the nil check was removed." {
+		t.Errorf("answer = %q, want the raw model text with no JSON parsing applied", answer)
+	}
+}
+
+func TestClaudeProvider_Answer_APIErrorIsWrapped(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]string{"message": "invalid x-api-key"},
+		})
+	}))
+	defer server.Close()
+
+	p := newTestClaudeProvider(server)
+	_, err := p.Answer(context.Background(), assess.AssessmentRequest{}, "why did this fail?")
+	if err == nil {
+		t.Fatal("expected an error for a 401 response")
+	}
+	if !strings.Contains(err.Error(), "invalid x-api-key") {
+		t.Errorf("expected the Anthropic error message to surface, got: %v", err)
+	}
+}
+
 // The API may split one answer across several text blocks.
 func TestClaudeProvider_Assess_JoinsMultipleTextBlocks(t *testing.T) {
 	half := len(validFindingsJSON) / 2

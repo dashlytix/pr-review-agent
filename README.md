@@ -228,6 +228,19 @@ reply above), while `closed` doesn't (only the Slack lifecycle ping fires) — `
 dispatches on the webhook's `action` internally, so one job/container run covers whichever of
 the two a given action needs.
 
+### Slack Q&A bot (`cmd/slackbot`)
+
+Optional, separate from the notification flow above: `@mention` the bot inside an existing
+PR's Slack thread with a question (e.g. `@pr-review-agent why did this fail?`) and it replies
+in-thread using that PR's diff, via an LLM call. Unlike everything else in this repo (a
+GitHub Action container invoked briefly per event, then it exits), this is a genuinely
+always-on process — Slack only pushes `@mention`s to something actively connected over
+Socket Mode — so it's `cmd/slackbot`, a separate binary deployed as a systemd service rather
+than an Action step. It reuses `internal/notify`'s existing PR↔thread marker-comment
+mechanism in reverse (`FindPRByThreadRoot`/`ListOpenPRThreadRoots`) to work out which PR a
+thread belongs to, and `internal/gather`/`provider.Answer` to fetch the diff and ask the LLM.
+See `deploy/README.md` for the Slack app configuration and systemd setup this needs.
+
 ## Open items carried over from §11
 
 These are the spec's own open questions, unresolved here too:

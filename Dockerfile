@@ -1,8 +1,15 @@
-# Builder — no external Go modules, so no network access is needed
-# beyond pulling the base image itself.
+# Builder — go.mod now has a real require block (internal/slackbot's
+# github.com/slack-go/slack, added for cmd/slackbot -- a separate,
+# always-on daemon not built by this Dockerfile at all, see cmd/slackbot
+# and deploy/). This build only ever produces ./cmd/agent, which doesn't
+# import slack-go, but Go's module graph still needs go.sum's checksums
+# to resolve the build list, so -- unlike before this dependency
+# landed -- this build now needs network access to a module proxy
+# (unless the module cache is already warm), not just to pull the base
+# image.
 FROM golang:1.22-alpine AS build
 WORKDIR /src
-COPY go.mod ./
+COPY go.mod go.sum ./
 COPY cmd ./cmd
 COPY internal ./internal
 RUN CGO_ENABLED=0 go build -o /out/ai-ci-agent ./cmd/agent

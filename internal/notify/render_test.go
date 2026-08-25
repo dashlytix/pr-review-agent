@@ -269,3 +269,15 @@ func TestRenderAIReview_NoViewPRButton(t *testing.T) {
 		t.Errorf("RenderAIReview() = %s, want no View PR button -- that's already on the thread root/CI-failed reply", got)
 	}
 }
+
+func TestRenderAnswer_IncludesQuestionAndAnswer(t *testing.T) {
+	got, _ := json.Marshal(RenderAnswer("why did this fail?", "The nil check on line 12 was removed."))
+	for _, want := range []string{"why did this fail?", "The nil check on line 12 was removed."} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("RenderAnswer() = %s, want it to contain %q", got, want)
+		}
+	}
+	if strings.Contains(string(got), "View PR") {
+		t.Errorf("RenderAnswer() = %s, want no View PR button -- that's already on the thread root", got)
+	}
+}
