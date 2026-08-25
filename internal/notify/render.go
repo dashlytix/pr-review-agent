@@ -142,6 +142,27 @@ func RenderAIReview(pr PullRequest, summary string, findings, recommendations []
 	}
 }
 
+// RenderAnswer builds the Slack thread reply for the Q&A path
+// (internal/slackbot): a human @-mentioned the bot with a question, and
+// this carries the question back alongside the LLM's answer so the
+// reply reads standalone in the thread, without needing to scroll up to
+// re-find what was asked. Shares colorReview with RenderAIReview -- both
+// are LLM-generated review content, as distinct from the plain
+// lifecycle cards' threadCard styling.
+func RenderAnswer(question, answer string) SlackAttachmentMessage {
+	blocks := []SlackBlock{
+		{Type: "section", Text: &SlackText{Type: "mrkdwn", Text: fmt.Sprintf("*Q: %s*", question)}},
+		{Type: "section", Text: &SlackText{Type: "mrkdwn", Text: answer}},
+	}
+	return SlackAttachmentMessage{
+		Attachments: []SlackAttachment{{
+			Color:    colorReview,
+			Fallback: fmt.Sprintf("Q: %s", question),
+			Blocks:   blocks,
+		}},
+	}
+}
+
 func bulletList(items []string) string {
 	lines := make([]string, len(items))
 	for i, item := range items {

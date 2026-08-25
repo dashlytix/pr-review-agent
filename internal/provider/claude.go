@@ -229,6 +229,25 @@ func (p *ClaudeProvider) Review(ctx context.Context, req AssessmentRequest) (Rev
 	return result, nil
 }
 
+// answerMaxTokens bounds a Q&A reply: short enough for a Slack message,
+// well under Review's 16384 (there's no findings schema to fill in here,
+// just a few sentences of prose).
+const answerMaxTokens = 1024
+
+// Answer drives the Slack Q&A path: a free-form question about the same
+// diff/files context Review uses, answered as plain text. Unlike
+// Assess/Review there's no JSON contract to parse, so a successful call
+// returns the model's raw text directly -- no repair-retry step.
+func (p *ClaudeProvider) Answer(ctx context.Context, req AssessmentRequest, question string) (string, error) {
+	prompt := assess.BuildAnswerPrompt(req, question)
+
+	text, err := p.complete(ctx, assess.AnswerSystemPrompt, prompt, answerMaxTokens)
+	if err != nil {
+		return "", fmt.Errorf("claude: answer call failed: %w", err)
+	}
+	return text, nil
+}
+
 // complete is the low-level call shared by the initial assessment and the
 // repair attempt. Both are plain single-turn text completions — tools
 // stay disabled throughout, per §7. Tries BaseURL first (in whichever

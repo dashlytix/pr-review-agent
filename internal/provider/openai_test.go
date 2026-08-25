@@ -102,6 +102,30 @@ func TestOpenAIProvider_Assess_APIErrorIsWrapped(t *testing.T) {
 	}
 }
 
+func TestOpenAIProvider_Answer_ReturnsRawText(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body openAIRequest
+		json.NewDecoder(r.Body).Decode(&body)
+		if len(body.Messages) != 2 || body.Messages[0].Role != "system" || !strings.Contains(body.Messages[0].Content, "answering a follow-up question") {
+			t.Errorf("expected AnswerSystemPrompt as the system message, got: %+v", body.Messages)
+		}
+		if !strings.Contains(body.Messages[1].Content, "## Question\nwhy did this fail?") {
+			t.Errorf("expected the question appended to the prompt, got: %q", body.Messages[1].Content)
+		}
+		json.NewEncoder(w).Encode(openAITextResponse("It fails because the nil check was removed."))
+	}))
+	defer server.Close()
+
+	p := newTestOpenAIProvider(server)
+	answer, err := p.Answer(context.Background(), assess.AssessmentRequest{}, "why did this fail?")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if answer != "It fails because the nil check was removed." {
+		t.Errorf("answer = %q, want the raw model text with no JSON parsing applied", answer)
+	}
+}
+
 func TestOpenAIProvider_Assess_DoesNotForceJSONObjectResponseFormat(t *testing.T) {
 	// A top-level JSON array (what SystemPrompt now asks for) is
 	// incompatible with response_format: {type: "json_object"}, which

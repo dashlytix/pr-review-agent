@@ -34,9 +34,15 @@ type ReviewResult = assess.ReviewResult
 // category is mandatory, and an empty Findings slice is the common "no
 // issues found" result. ReviewResult.Summary is generated in the same
 // call as Findings, not a second one.
+//
+// Answer drives the Slack Q&A path (internal/slackbot): a free-form
+// question about the same PR-diff context Review uses, answered as
+// plain text rather than a structured finding — no JSON contract, no
+// parse/repair step, just the model's raw response.
 type Provider interface {
 	Assess(ctx context.Context, req AssessmentRequest) ([]Assessment, error)
 	Review(ctx context.Context, req AssessmentRequest) (ReviewResult, error)
+	Answer(ctx context.Context, req AssessmentRequest, question string) (string, error)
 }
 
 // envOr reads an environment variable, falling back to def when unset or

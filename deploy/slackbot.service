@@ -1,0 +1,19 @@
+[Unit]
+Description=ai-ci-agent Slack Q&A bot (cmd/slackbot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ai-ci-agent-slackbot
+EnvironmentFile=/etc/ai-ci-agent/slackbot.env
+Restart=on-failure
+RestartSec=5
+# No privileges needed beyond outbound HTTPS (Slack Socket Mode + GitHub
+# API), so run as an unprivileged, otherwise-unused system user.
+User=ai-ci-agent
+Group=ai-ci-agent
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

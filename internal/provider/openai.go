@@ -124,6 +124,20 @@ func (p *OpenAIProvider) Review(ctx context.Context, req AssessmentRequest) (Rev
 	return result, nil
 }
 
+// Answer drives the Slack Q&A path: a free-form question about the same
+// diff/files context Review uses, answered as plain text. Unlike
+// Assess/Review there's no JSON contract to parse, so a successful call
+// returns the model's raw text directly -- no repair-retry step.
+func (p *OpenAIProvider) Answer(ctx context.Context, req AssessmentRequest, question string) (string, error) {
+	prompt := assess.BuildAnswerPrompt(req, question)
+
+	text, err := p.complete(ctx, assess.AnswerSystemPrompt, prompt)
+	if err != nil {
+		return "", fmt.Errorf("openai: answer call failed: %w", err)
+	}
+	return text, nil
+}
+
 func (p *OpenAIProvider) complete(ctx context.Context, system, user string) (string, error) {
 	body := openAIRequest{
 		Model: p.Model,

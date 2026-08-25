@@ -97,6 +97,54 @@ An empty "findings" array is valid and means no issues were found. "summary" is 
 
 It is not valid JSON, or does not match that shape. Extract the intended meaning and re-emit it as exactly one valid JSON object matching that shape — no prose, no markdown fence, nothing else. If "summary" cannot be recovered, write your own best-effort 2-4 sentence description from whatever diff context appears in the text below. For findings, if a field cannot be recovered, use "" for strings, 0 for line, and false for anchored. If no findings can be recovered at all, emit an empty "findings" array.`
 
+// AnswerSystemPrompt drives the Slack Q&A path (a human @-mentions the
+// bot inside a PR's thread with a free-form question). Unlike
+// SystemPrompt/ReviewSystemPrompt, the response is plain text, not a
+// JSON contract — there's no finding schema to fill in, just a direct
+// answer to a direct question, so ParseAssessments/ParseReview and the
+// repair-retry flow don't apply here at all.
+const AnswerSystemPrompt = `You are the AI CI Agent, answering a follow-up question about a specific pull request inside a Slack thread. You are given that PR's diff and the contents/patches of the files it touches, plus a question from a human reviewer.
+
+Answer only from the diff/files you were given — do not guess at code you can't see. If the diff doesn't contain enough information to answer, say so plainly rather than speculating.
+
+Keep the answer short and direct, suitable for a Slack message: a few sentences, plain prose, no markdown headers, no JSON, no code fences unless quoting a short snippet is essential to the answer. You never suggest merging, re-running jobs, or applying fixes yourself — you only answer the question asked.`
+
+// BuildAnswerPrompt renders the user-turn prompt for the Slack Q&A path:
+// the same diff/files section BuildReviewPrompt uses, followed by the
+// human's question. Reuses AssessmentRequest rather than a new type
+// since the underlying gathered context (diff, files) is identical to
+// the review path's — only the question and system prompt differ.
+func BuildAnswerPrompt(req AssessmentRequest, question string) string {
+	var b strings.Builder
+
+	b.WriteString("## PR diff\n")
+	if req.Diff == "" {
+		b.WriteString("(no diff available)")
+	} else {
+		b.WriteString(truncate(req.Diff, 12000))
+	}
+
+	b.WriteString("\n\n## Touched files\n")
+	if len(req.Files) == 0 {
+		b.WriteString("(none)")
+	} else {
+		names := make([]string, 0, len(req.Files))
+		for name := range req.Files {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			b.WriteString(fmt.Sprintf("\n### %s\n", name))
+			b.WriteString(truncate(req.Files[name], 3000))
+		}
+	}
+
+	b.WriteString("\n\n## Question\n")
+	b.WriteString(question)
+
+	return b.String()
+}
+
 // BuildPrompt renders the user-turn prompt from gathered CI context.
 func BuildPrompt(req AssessmentRequest) string {
 	var b strings.Builder
