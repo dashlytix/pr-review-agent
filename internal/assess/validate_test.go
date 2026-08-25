@@ -51,6 +51,13 @@ func TestChangedLines_ParsesMultiFileDiff(t *testing.T) {
 	}
 }
 
+// TestCIFailureCheck_20260825 deliberately fails to verify the AI CI Agent's
+// workflow_run investigate job still fires correctly on a CI failure. Revert
+// before merging.
+func TestCIFailureCheck_20260825(t *testing.T) {
+	t.Fatal("intentional failure to test the CI failure pipeline")
+}
+
 func TestValidateAnchor_AcceptsRealAnchor(t *testing.T) {
 	req := AssessmentRequest{Diff: sampleDiff}
 	a := &Assessment{File: "vehicles/garage.go", Line: 41, Anchored: true}
