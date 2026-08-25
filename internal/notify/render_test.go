@@ -7,7 +7,7 @@ import (
 )
 
 func TestRenderOpened_HasBlueBorderHeaderAndButton(t *testing.T) {
-	pr := PullRequest{Number: 1, Repo: "widgets", HTMLURL: "https://github.com/o/r/pull/1", Author: "alice"}
+	pr := PullRequest{Number: 1, Title: "Add widgets", Repo: "widgets", HTMLURL: "https://github.com/o/r/pull/1", Author: "alice"}
 	msg := RenderOpened(pr)
 
 	if len(msg.Attachments) != 1 {
@@ -18,7 +18,7 @@ func TestRenderOpened_HasBlueBorderHeaderAndButton(t *testing.T) {
 		t.Errorf("Color = %q, want %q", att.Color, colorOpened)
 	}
 	got, _ := json.Marshal(msg)
-	for _, want := range []string{"PR opened — PR #1", "widgets", "alice", "Opened", "View PR", "https://github.com/o/r/pull/1"} {
+	for _, want := range []string{"PR #1", "Add widgets", "widgets", "alice", "Opened", "View PR", "https://github.com/o/r/pull/1"} {
 		if !strings.Contains(string(got), want) {
 			t.Errorf("RenderOpened() = %s, want it to contain %q", got, want)
 		}
@@ -136,7 +136,10 @@ func TestSummaryExcerpt_TruncatesLongTextWithEllipsis(t *testing.T) {
 	}
 }
 
-func TestRenderClosed_HasRedBorder(t *testing.T) {
+// RenderClosed/RenderMerged are thread replies, not new top-level
+// messages -- they deliberately omit the repo/author header line RenderOpened
+// carries, since that context already lives on the thread's root message.
+func TestRenderClosed_HasRedBorderAndShortBody(t *testing.T) {
 	pr := PullRequest{Number: 2, Repo: "widgets", HTMLURL: "https://github.com/o/r/pull/2", Author: "bob"}
 	msg := RenderClosed(pr)
 
@@ -144,10 +147,13 @@ func TestRenderClosed_HasRedBorder(t *testing.T) {
 		t.Errorf("Color = %q, want %q", msg.Attachments[0].Color, colorClosed)
 	}
 	got, _ := json.Marshal(msg)
-	for _, want := range []string{"PR closed — PR #2", "Closed"} {
+	for _, want := range []string{"PR closed", "Closed", "View PR"} {
 		if !strings.Contains(string(got), want) {
 			t.Errorf("RenderClosed() = %s, want it to contain %q", got, want)
 		}
+	}
+	if strings.Contains(string(got), "widgets") || strings.Contains(string(got), "bob") {
+		t.Errorf("RenderClosed() = %s, want no repo/author header -- that's already on the thread root", got)
 	}
 }
 
@@ -159,7 +165,7 @@ func TestRenderMerged_HasGreenBorderAndCommitField(t *testing.T) {
 		t.Errorf("Color = %q, want %q", msg.Attachments[0].Color, colorMerged)
 	}
 	got, _ := json.Marshal(msg)
-	for _, want := range []string{"PR merged — PR #3", "Merged", "Commit", "abc1234", "main"} {
+	for _, want := range []string{"PR closed", "Merged", "Commit", "abc1234", "main"} {
 		if !strings.Contains(string(got), want) {
 			t.Errorf("RenderMerged() = %s, want it to contain %q", got, want)
 		}
@@ -185,13 +191,16 @@ func TestRenderCIFailurePosted_HasOrangeBorderAndNoDiagnosisText(t *testing.T) {
 		t.Errorf("Color = %q, want %q", msg.Attachments[0].Color, colorCIFailed)
 	}
 	got, _ := json.Marshal(msg)
-	for _, want := range []string{"CI check failed — PR #5", "CI failed", "View PR"} {
+	for _, want := range []string{"CI Check Failed", "View PR"} {
 		if !strings.Contains(string(got), want) {
 			t.Errorf("RenderCIFailurePosted() = %s, want it to contain %q", got, want)
 		}
 	}
 	if strings.Contains(string(got), "Impact") {
 		t.Errorf("RenderCIFailurePosted() with empty impact = %s, want no Impact field", got)
+	}
+	if strings.Contains(string(got), "widgets") || strings.Contains(string(got), "erin") {
+		t.Errorf("RenderCIFailurePosted() = %s, want no repo/author header -- that's already on the thread root", got)
 	}
 }
 
@@ -205,13 +214,9 @@ func TestRenderCIFailurePosted_WithImpactAddsField(t *testing.T) {
 	}
 }
 
-// None of the four lifecycle notifications should ever carry findings or
-// diagnosis text -- that stays in the GitHub PR comment, not Slack. The
-// CI-failed card is a deliberate, narrow exception: it may carry a
-// single derived Overall-impact verdict (see TestRenderCIFailurePosted_
-// WithImpactAddsField), but never full finding detail -- tested here
-// with an empty impact so this check still catches any regression that
-// leaks real findings text into the card.
+// None of the PR lifecycle notifications should ever carry findings or
+// diagnosis text -- that stays in the GitHub PR comment, or (for AI
+// review) in its own dedicated RenderAIReview thread reply.
 func TestLifecycleNotifications_NeverCarryReviewContent(t *testing.T) {
 	pr := PullRequest{Number: 6, Repo: "widgets", HTMLURL: "https://github.com/o/r/pull/6", Author: "frank", BaseRef: "main", HeadSHA: "abc1234"}
 	for name, msg := range map[string]SlackAttachmentMessage{
@@ -220,14 +225,47 @@ func TestLifecycleNotifications_NeverCarryReviewContent(t *testing.T) {
 		"merged":     RenderMerged(pr),
 		"ci-failure": RenderCIFailurePosted(pr, "", ""),
 	} {
-		if len(msg.Attachments) != 1 || len(msg.Attachments[0].Blocks) != 3 {
-			t.Errorf("%s: expected exactly 1 attachment with 3 blocks (header, fields, button), got %+v", name, msg)
-		}
 		got, _ := json.Marshal(msg)
 		for _, unwanted := range []string{"red_circle", "orange_circle", "critical", "warning", "finding"} {
 			if strings.Contains(strings.ToLower(string(got)), unwanted) {
 				t.Errorf("%s: RenderX() = %s, want no review/severity content (%q)", name, got, unwanted)
 			}
 		}
+	}
+}
+
+func TestRenderAIReview_IncludesSummaryFindingsAndRecommendations(t *testing.T) {
+	pr := PullRequest{Number: 7}
+	msg := RenderAIReview(pr, "Looks mostly good.", []string{"finding one", "finding two"}, []string{"fix one"})
+
+	if len(msg.Attachments) != 1 {
+		t.Fatalf("len(Attachments) = %d, want 1", len(msg.Attachments))
+	}
+	got, _ := json.Marshal(msg)
+	for _, want := range []string{"AI Review", "Summary", "Looks mostly good.", "Findings", "finding one", "finding two", "Recommendations", "fix one"} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("RenderAIReview() = %s, want it to contain %q", got, want)
+		}
+	}
+}
+
+func TestRenderAIReview_OmitsEmptySections(t *testing.T) {
+	pr := PullRequest{Number: 7}
+	got, _ := json.Marshal(RenderAIReview(pr, "", nil, nil))
+	for _, unwanted := range []string{"Summary", "Findings", "Recommendations"} {
+		if strings.Contains(string(got), unwanted) {
+			t.Errorf("RenderAIReview() with nothing to show = %s, want no %q section", got, unwanted)
+		}
+	}
+	if !strings.Contains(string(got), "AI Review") {
+		t.Errorf("RenderAIReview() = %s, want the header to still render", got)
+	}
+}
+
+func TestRenderAIReview_NoViewPRButton(t *testing.T) {
+	pr := PullRequest{Number: 7, HTMLURL: "https://github.com/o/r/pull/7"}
+	got, _ := json.Marshal(RenderAIReview(pr, "summary", nil, nil))
+	if strings.Contains(string(got), "View PR") {
+		t.Errorf("RenderAIReview() = %s, want no View PR button -- that's already on the thread root/CI-failed reply", got)
 	}
 }
