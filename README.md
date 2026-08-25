@@ -149,24 +149,51 @@ of `github-actions[bot]` — no code change, just which token the workflow mints
 
 ## Slack notifications
 
-Optional, opt-in via the `slack-webhook-url` input (a Slack incoming webhook URL) — if
-unset, none of this fires and the rest of the action behaves exactly as documented above.
-`internal/notify` posts a Slack Block Kit message using a legacy attachment (so the colored
-left border renders), no retry, for four lifecycle events only — never review content,
-findings, or diagnosis text, which stay in the GitHub PR comment posted separately:
+Optional, opt-in via the `slack-bot-token` (`xoxb-...`, needs the `chat:write` scope) and
+`slack-channel` inputs — if either is unset, none of this fires and the rest of the action
+behaves exactly as documented above. Both are required (not a webhook URL): threading
+replies onto an existing message needs that message's `ts`, and only the `chat.postMessage`
+Web API returns one — a Slack incoming webhook's response body is just the literal text
+`ok`, with nowhere to carry a `ts` back.
 
-- **PR opened** — blue border, plus a Summary field excerpted from the PR's own
-  `pull_request.body` (the author's description, not AI output, and not an LLM call) — see
-  below.
-- **PR merged** — green border, plus a Commit field (short SHA + base branch).
-- **PR closed without merging** — red border.
-- **CI check failed** — orange border, on the `workflow_run` failure path (right after
-  `investigate()` posts a fresh, not-already-posted PR comment). No card is sent for a
-  passing CI run's templated comment.
+Every event for one PR lands in a single Slack thread instead of the channel filling up with
+one top-level message per event:
 
-Each card is a single attachment: a header/subtitle section, a Status field (plus Commit for
-the merged case, or Summary for the opened case), and a "View PR" button linking to the PR's
-`html_url`.
+- **PR opened** posts the one top-level/root message for that PR — a blue-bordered card with
+  a Status field and, when the PR description has one, a Summary field excerpted from the
+  PR's own `pull_request.body` (the author's text, not AI output, and not an LLM call; see
+  `notify.summaryExcerpt` below). Its `ts` is saved (see "Thread persistence" below) so every
+  later event for this PR replies in its thread instead of posting a new top-level message.
+- **CI check failed** replies in that thread — an orange-bordered card with just a "CI Check
+  Failed" header, an optional Impact field (🔴/🟡/🟢, the same verdict `post.OverallImpact`
+  computes for the GitHub PR comment, so the two surfaces never disagree), and a "View PR"
+  button. Fires on the `workflow_run` failure path, right after `investigate()` posts a
+  fresh, not-already-posted PR comment — no card for a passing CI run.
+- **AI review** replies in that thread — a purple-bordered "AI Review" card with Summary,
+  Findings, and Recommendations sections (each omitted when empty), translated from the same
+  `provider.ReviewResult` the GitHub PR review comment is built from. Fires on the
+  `pull_request` opened/synchronize trigger, right after `reviewPR()` posts a fresh review —
+  never for a degraded/fallback review, which has no structured result to summarize.
+- **PR closed** replies in that thread — a short "PR closed" card (Status: Closed, or Status:
+  Merged plus a Commit field for a merge), never a new top-level message.
+
+Findings/diagnosis text never reach the *root* PR-opened card or the CI-failed/closed reply
+cards — only the dedicated AI-review reply carries review content, mirroring what stays in
+the GitHub PR comments posted by `internal/post`'s renderers.
+
+Every reply beyond the root message is best-effort: a lookup miss (no root found for this
+PR — e.g. Slack was disabled when it was opened) or a send failure is logged and swallowed,
+never fails the run, and never falls back to posting a new top-level message.
+
+### Thread persistence
+
+Each event runs as its own separate, stateless process (matching this action's stateless
+design), so the PR's root message `ts` can't just live in memory between events. It's
+persisted the same "idempotent by lookup, not by database" way `internal/post`'s own
+marker comments work: `internal/notify`'s `SaveThreadRoot` posts a small marker-only GitHub
+issue comment on the PR (`<!-- ai-ci-agent:slack-thread:ts=... -->`, with a one-line note
+above it) when the root message is sent, and `FindThreadRoot` searches the PR's issue
+comments for that marker before every later reply.
 
 `notify.summaryExcerpt` builds the opened card's Summary field: it prefers the first few
 lines under a `## Summary`/`Summary` heading if the PR body has one (stopping before the
@@ -191,13 +218,15 @@ jobs:
           github-token: ${{ github.token }}
           llm-provider: claude
           llm-api-key: ${{ secrets.LLM_API_KEY }}
-          slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          slack-bot-token: ${{ secrets.SLACK_BOT_TOKEN }}
+          slack-channel: ${{ secrets.SLACK_CHANNEL_ID }}
 ```
 
 `llm-provider`/`llm-api-key` **are** needed here: `opened`/`synchronize` reach the LLM
-provider for the full review (posted as a PR comment, not to Slack), while `closed` doesn't
-(only the Slack lifecycle ping fires) — `main.go` dispatches on the webhook's `action`
-internally, so one job/container run covers whichever of the two a given action needs.
+provider for the full review (posted as a PR comment, and — on success — the AI-review Slack
+reply above), while `closed` doesn't (only the Slack lifecycle ping fires) — `main.go`
+dispatches on the webhook's `action` internally, so one job/container run covers whichever of
+the two a given action needs.
 
 ## Open items carried over from §11
 
