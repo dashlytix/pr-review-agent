@@ -54,19 +54,23 @@ jobs:
 
       - name: Run agent review against the target PR
         env:
-          LLM_API_KEY_VALUE: ${{ secrets.LLM_API_KEY }}
-          LLM_PROXY_API_KEY_VALUE: ${{ secrets.LLM_PROXY_API_KEY }}
+          # Routed through OpenRouter instead of the default claude
+          # two-tier chain -- llm-proxy's VM integration is broken
+          # gateway-side, and the direct-Anthropic fallback's workspace
+          # has no funded credit balance (same issue ai-ci-agent.yml
+          # worked around; this workflow just hadn't been updated to
+          # match).
+          OPENROUTER_API_KEY_VALUE: ${{ secrets.OPENROUTER_API_KEY }}
           CROSS_REPO_TOKEN_VALUE: ${{ secrets.CROSS_REPO_TOKEN }}
         run: |
           docker run --rm \
             -e GITHUB_EVENT_NAME=pull_request \
             -e GITHUB_EVENT_PATH=/event.json \
             -e GITHUB_REPOSITORY="${{ inputs.target_repo }}" \
-            -e "INPUT_LLM-PROVIDER=claude" \
-            -e "INPUT_LLM-API-KEY=${LLM_API_KEY_VALUE}" \
-            -e "INPUT_LLM-PROXY-API-KEY=${LLM_PROXY_API_KEY_VALUE}" \
-            -e "INPUT_LLM-MODEL=gpt-5.6-sol" \
-            -e "INPUT_LLM-FALLBACK-MODEL=claude-opus-5" \
+            -e "INPUT_LLM-PROVIDER=openai" \
+            -e "INPUT_LLM-BASE-URL=https://openrouter.ai/api/v1" \
+            -e "INPUT_LLM-API-KEY=${OPENROUTER_API_KEY_VALUE}" \
+            -e "INPUT_LLM-MODEL=openai/gpt-4o-mini" \
             -e "INPUT_GITHUB-TOKEN=${CROSS_REPO_TOKEN_VALUE}" \
             -v /tmp/event.json:/event.json:ro \
             manual-cross-repo-review
