@@ -387,7 +387,7 @@ func investigate(ctx context.Context, client *ghclient.Client, llmProvider provi
 // before this thread-based rework -- they get no Slack reply at all,
 // only the GitHub fallback comment.
 func reviewPR(ctx context.Context, client *ghclient.Client, llmProvider provider.Provider, prNumber int, headSHA string, slackCfg notify.SlackConfig) error {
-	req, gatherErr := gather.GatherForReview(ctx, client, prNumber)
+	req, mergeState, gatherErr := gather.GatherForReview(ctx, client, prNumber)
 
 	var result provider.ReviewResult
 	assessErr := gatherErr
@@ -395,7 +395,7 @@ func reviewPR(ctx context.Context, client *ghclient.Client, llmProvider provider
 		result, assessErr = llmProvider.Review(ctx, req)
 	}
 
-	summary, comments := renderReviewSummary(assessErr, result, headSHA)
+	summary, comments := renderReviewSummary(assessErr, result, headSHA, mergeState.Conflicting())
 
 	url, alreadyPosted, err := post.PostReview(ctx, client, prNumber, headSHA, summary, comments)
 	if err != nil {
@@ -441,11 +441,13 @@ func reviewFindingsForSlack(assessments []provider.Assessment) (findings, recomm
 
 // renderReviewSummary is renderReview's counterpart for the review path:
 // the same §7 degrade-gracefully cases, minus the fallback's raw-logs
-// link (there's no CI run here to link to).
-func renderReviewSummary(assessErr error, result provider.ReviewResult, headSHA string) (string, []post.ReviewComment) {
+// link (there's no CI run here to link to). conflicting is passed
+// through to the success path only -- the degrade cases already show a
+// generic fallback message and have no structured review to annotate.
+func renderReviewSummary(assessErr error, result provider.ReviewResult, headSHA string, conflicting bool) (string, []post.ReviewComment) {
 	switch {
 	case assessErr == nil:
-		return post.RenderReviewReview(result, headSHA)
+		return post.RenderReviewReview(result, headSHA, conflicting)
 
 	case errors.Is(assessErr, assess.ErrMalformed):
 		log.Printf("review malformed after repair attempt: %v", assessErr)
