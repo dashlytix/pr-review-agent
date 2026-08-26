@@ -108,7 +108,7 @@ func TestRenderMinimal_IncludesReasonAndNoMarker(t *testing.T) {
 
 func TestRenderReviewReview_NoIssuesSaysSo(t *testing.T) {
 	result := provider.ReviewResult{Summary: "Adds a health-check endpoint to the HTTP API."}
-	summary, comments := RenderReviewReview(result, "abc1234")
+	summary, comments := RenderReviewReview(result, "abc1234", false)
 
 	if !strings.Contains(summary, "## Summary\nAdds a health-check endpoint") {
 		t.Errorf("expected the Summary section to lead the comment, got:\n%s", summary)
@@ -128,9 +128,23 @@ func TestRenderReviewReview_NoIssuesSaysSo(t *testing.T) {
 }
 
 func TestRenderReviewReview_NoSummaryOmitsSection(t *testing.T) {
-	summary, _ := RenderReviewReview(provider.ReviewResult{}, "abc1234")
+	summary, _ := RenderReviewReview(provider.ReviewResult{}, "abc1234", false)
 	if strings.Contains(summary, "## Summary") {
 		t.Errorf("expected no Summary section when Summary is empty, got:\n%s", summary)
+	}
+}
+
+func TestRenderReviewReview_ConflictingAddsWarning(t *testing.T) {
+	summary, _ := RenderReviewReview(provider.ReviewResult{Summary: "x"}, "abc1234", true)
+	if !strings.Contains(summary, "merge conflicts") {
+		t.Errorf("expected a merge-conflict warning when conflicting is true, got:\n%s", summary)
+	}
+}
+
+func TestRenderReviewReview_NotConflictingOmitsWarning(t *testing.T) {
+	summary, _ := RenderReviewReview(provider.ReviewResult{Summary: "x"}, "abc1234", false)
+	if strings.Contains(summary, "merge conflicts") {
+		t.Errorf("expected no merge-conflict warning when conflicting is false, got:\n%s", summary)
 	}
 }
 
@@ -143,7 +157,7 @@ func TestRenderReviewReview_AnchoredFindingsBecomeInlineComments(t *testing.T) {
 		},
 	}
 
-	summary, comments := RenderReviewReview(result, "abc1234")
+	summary, comments := RenderReviewReview(result, "abc1234", false)
 
 	if len(comments) != 2 {
 		t.Fatalf("len(comments) = %d, want 2", len(comments))
@@ -193,7 +207,7 @@ func TestMarkerAndReviewMarker_NeverCollide(t *testing.T) {
 	sha := "abc1234"
 	ciFinding := []provider.Assessment{{Category: "ci-failure", Severity: "P1", Confidence: "high", Comment: "x"}}
 	ciBody, _ := RenderAssessmentReview(ciFinding, sha, "")
-	reviewBody, _ := RenderReviewReview(provider.ReviewResult{Summary: "x"}, sha)
+	reviewBody, _ := RenderReviewReview(provider.ReviewResult{Summary: "x"}, sha, false)
 
 	if strings.Contains(ciBody, reviewMarker(sha)) {
 		t.Error("a CI-failure review must not embed the review marker")

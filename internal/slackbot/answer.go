@@ -77,7 +77,7 @@ func handleMention(ctx context.Context, cfg Config, cache *prCache, m Mention) {
 		return
 	}
 
-	req, err := gather.GatherForReview(ctx, cfg.Client, prNumber)
+	req, _, err := gather.GatherForReview(ctx, cfg.Client, prNumber)
 	if err != nil {
 		log.Printf("slackbot: gather failed for pr %d: %v", prNumber, err)
 		reply(ctx, slackCfg, m.ThreadTS, question, "Sorry, I hit an error fetching this PR's diff.")

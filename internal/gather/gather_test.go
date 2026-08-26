@@ -52,10 +52,14 @@ func mockGitHub(t *testing.T, prNumberForCommitLookup int) *httptest.Server {
 		w.Write([]byte(testLog))
 	})
 	mux.HandleFunc("/repos/acme/widgets/pulls/42", func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Accept") != "application/vnd.github.v3.diff" {
-			t.Errorf("expected diff Accept header, got %q", r.Header.Get("Accept"))
+		// GetJSON (fetchMergeState) and GetRaw with the diff Accept header
+		// (fetchDiff) share this same endpoint, distinguished only by the
+		// Accept header each sends.
+		if r.Header.Get("Accept") == "application/vnd.github.v3.diff" {
+			w.Write([]byte(testDiff))
+			return
 		}
-		w.Write([]byte(testDiff))
+		json.NewEncoder(w).Encode(map[string]any{"mergeable": true, "mergeable_state": "clean"})
 	})
 	mux.HandleFunc("/repos/acme/widgets/pulls/42/files", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("page") != "1" {
@@ -139,6 +143,76 @@ func TestGather_NoAssociatedPRReturnsNilResultAndNilError(t *testing.T) {
 	result, err := Gather(context.Background(), client, 123, 0)
 	if result != nil || err != nil {
 		t.Fatalf("expected (nil, nil) when no PR is associated with the run, got (%v, %v)", result, err)
+	}
+}
+
+func TestGatherForReview_FetchesMergeState(t *testing.T) {
+	server := mockGitHub(t, 0)
+	defer server.Close()
+	client := testClient(server)
+
+	req, merge, err := GatherForReview(context.Background(), client, 42)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(req.Diff, "func (g *Garage) Owner()") {
+		t.Errorf("Diff missing expected content: %q", req.Diff)
+	}
+	if merge.MergeableState != "clean" || merge.Mergeable == nil || !*merge.Mergeable {
+		t.Errorf("MergeState = %+v, want mergeable=true state=clean per the mock response", merge)
+	}
+	if merge.Conflicting() {
+		t.Error("a clean, mergeable state must not be reported as conflicting")
+	}
+}
+
+func TestGatherForReview_MergeStateFetchFailureIsNonFatal(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/widgets/pulls/42", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Accept") == "application/vnd.github.v3.diff" {
+			w.Write([]byte(testDiff))
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError) // simulate the merge-state fetch failing
+	})
+	mux.HandleFunc("/repos/acme/widgets/pulls/42/files", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]any{})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	client := testClient(server)
+	client.MaxAttempts = 1
+
+	req, merge, err := GatherForReview(context.Background(), client, 42)
+	if err != nil {
+		t.Fatalf("a failed merge-state fetch must not fail the whole gather, got: %v", err)
+	}
+	if !strings.Contains(req.Diff, "func (g *Garage) Owner()") {
+		t.Errorf("Diff should still be populated despite the merge-state fetch failing, got: %q", req.Diff)
+	}
+	if merge.Conflicting() {
+		t.Error("an unknown (failed-fetch) merge state must not be reported as conflicting")
+	}
+}
+
+func TestMergeState_Conflicting(t *testing.T) {
+	mergeableTrue, mergeableFalse := true, false
+	tests := []struct {
+		name string
+		m    MergeState
+		want bool
+	}{
+		{"dirty state", MergeState{MergeableState: "dirty", Mergeable: &mergeableFalse}, true},
+		{"mergeable false, state not yet dirty", MergeState{MergeableState: "blocked", Mergeable: &mergeableFalse}, true},
+		{"mergeable true, clean", MergeState{MergeableState: "clean", Mergeable: &mergeableTrue}, false},
+		{"unknown/unset (not yet computed)", MergeState{}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.m.Conflicting(); got != tt.want {
+				t.Errorf("Conflicting() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 

@@ -7,6 +7,7 @@ package gather
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/dimension/ai-ci-agent/internal/assess"
@@ -53,6 +54,30 @@ type pullRef struct {
 type prFile struct {
 	Filename string `json:"filename"`
 	Patch    string `json:"patch"`
+}
+
+// MergeState is GitHub's own merge-conflict signal for a PR, fetched
+// alongside the diff so a review can flag conflicts the LLM's diff-only
+// analysis has no way to see (a diff never carries the base branch's
+// current state). Mergeable is nil while GitHub is still computing it
+// asynchronously (MergeableState "unknown") -- callers should only act
+// on a definitive "dirty" result, via Conflicting.
+type MergeState struct {
+	Mergeable      *bool
+	MergeableState string
+}
+
+// Conflicting reports whether GitHub has definitively determined this PR
+// cannot be merged as-is. A nil/unknown state (not yet computed) is not
+// treated as conflicting -- that would be a false positive on every
+// freshly opened or synced PR.
+func (m MergeState) Conflicting() bool {
+	return m.MergeableState == "dirty" || (m.Mergeable != nil && !*m.Mergeable)
+}
+
+type prMergeMeta struct {
+	Mergeable      *bool  `json:"mergeable"`
+	MergeableState string `json:"mergeable_state"`
 }
 
 // Gather fetches everything needed to assess the given workflow run. If
@@ -112,23 +137,40 @@ func Gather(ctx context.Context, client *ghclient.Client, runID int64, prNumber 
 
 // GatherForReview fetches just the PR diff and touched files for the
 // plain PR-review path (pull_request opened/synchronize) — no CI run is
-// involved here, so there's no log tail to fetch.
-func GatherForReview(ctx context.Context, client *ghclient.Client, prNumber int) (assess.AssessmentRequest, error) {
+// involved here, so there's no log tail to fetch. Also fetches the PR's
+// merge-conflict state (see MergeState) on a best-effort basis: a failed
+// fetch there is logged and swallowed rather than sinking an otherwise
+// successful gather, since the review still has a diff to work with —
+// it just won't get the conflict-state note.
+func GatherForReview(ctx context.Context, client *ghclient.Client, prNumber int) (assess.AssessmentRequest, MergeState, error) {
 	var req assess.AssessmentRequest
 
 	diff, err := fetchDiff(ctx, client, prNumber)
 	if err != nil {
-		return req, fmt.Errorf("gather: fetch diff: %w", err)
+		return req, MergeState{}, fmt.Errorf("gather: fetch diff: %w", err)
 	}
 	req.Diff = diff
 
 	files, err := fetchFiles(ctx, client, prNumber)
 	if err != nil {
-		return req, fmt.Errorf("gather: fetch files: %w", err)
+		return req, MergeState{}, fmt.Errorf("gather: fetch files: %w", err)
 	}
 	req.Files = files
 
-	return req, nil
+	merge, err := fetchMergeState(ctx, client, prNumber)
+	if err != nil {
+		log.Printf("gather: fetch merge state for pr %d: %v", prNumber, err)
+	}
+
+	return req, merge, nil
+}
+
+func fetchMergeState(ctx context.Context, client *ghclient.Client, prNumber int) (MergeState, error) {
+	var pr prMergeMeta
+	if err := client.GetJSON(ctx, client.RepoPath("/pulls/%d", prNumber), &pr); err != nil {
+		return MergeState{}, err
+	}
+	return MergeState{Mergeable: pr.Mergeable, MergeableState: pr.MergeableState}, nil
 }
 
 // resolvePRNumber falls back to GitHub's "list pull requests associated
