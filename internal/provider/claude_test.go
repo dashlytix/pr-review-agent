@@ -284,6 +284,15 @@ func TestClaudeProvider_Assess_JoinsMultipleTextBlocks(t *testing.T) {
 
 const validReviewResultJSON = `{"summary":"Fixes an off-by-one in the pagination helper.","findings":[{"file":"a.go","line":1,"category":"correctness","severity":"P2","comment":"off-by-one","suggested_fix":"use <=","confidence":"medium","anchored":true}]}`
 
+// reviewRequestWithDiff supplies the diff context validReviewResultJSON's
+// finding is anchored against (a.go:1), so RefineAssessments' grounding
+// check has real evidence to confirm rather than dropping the finding.
+func reviewRequestWithDiff() assess.AssessmentRequest {
+	return assess.AssessmentRequest{
+		Files: map[string]string{"a.go": "@@ -1 +1 @@\n+package a"},
+	}
+}
+
 func TestClaudeProvider_Review_Success(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(claudeTextResponse(validReviewResultJSON))
@@ -291,7 +300,7 @@ func TestClaudeProvider_Review_Success(t *testing.T) {
 	defer server.Close()
 
 	p := newTestClaudeProvider(server)
-	result, err := p.Review(context.Background(), assess.AssessmentRequest{})
+	result, err := p.Review(context.Background(), reviewRequestWithDiff())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -337,7 +346,7 @@ func TestClaudeProvider_Review_RepairsMalformedFirstResponse(t *testing.T) {
 	defer server.Close()
 
 	p := newTestClaudeProvider(server)
-	result, err := p.Review(context.Background(), assess.AssessmentRequest{})
+	result, err := p.Review(context.Background(), reviewRequestWithDiff())
 	if err != nil {
 		t.Fatalf("expected the repair attempt to succeed, got error: %v", err)
 	}

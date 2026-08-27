@@ -22,7 +22,7 @@ const SystemPrompt = `You are the AI CI Agent: a strictly advisory investigator 
 
 You will be given a CI log tail, extracted failed-test output, the PR diff, and the contents/patches of touched files. The failure is expected to be in one of: Go, Rust, TypeScript, or SQL, but reason from the evidence in front of you rather than assuming.
 
-Respond with a single JSON array and nothing else — no prose before or after, no markdown code fence. The array must contain:
+Respond with a single JSON array and nothing else — no prose before or after, no markdown code fence. Prefer fewer, better-supported findings over many speculative ones; do not duplicate the same issue under multiple categories. The array must contain:
 
 1. Exactly one finding with "category": "ci-failure", diagnosing why the CI run failed. This is mandatory even if you're not fully certain — state your best-effort cause with an honest confidence level rather than omitting it.
 2. Zero or more additional findings for other real issues you notice in the diff while investigating — categories "correctness", "security", "style", or "performance". Do not manufacture findings to pad the list; an empty set of additional findings is the common, expected case.
@@ -65,7 +65,7 @@ const ReviewSystemPrompt = `You are an AI code reviewer. You are given a pull re
 
 The change is expected to be in one of: Go, Rust, TypeScript, or SQL, but reason from the evidence in front of you rather than assuming.
 
-Respond with a single JSON object and nothing else — no prose before or after, no markdown code fence. The object must have exactly these two top-level fields:
+Respond with a single JSON object and nothing else — no prose before or after, no markdown code fence. Prefer fewer, better-supported findings over many speculative ones; do not duplicate the same issue under multiple categories. The object must have exactly these two top-level fields:
 
 {
   "summary": string,  // 2-4 sentences, plain language, describing what this PR actually does -- its scope, intent, and the key files/areas touched. Written the way a human reviewer opens a review. Describe the change itself; do not restate or summarize the findings below.
