@@ -169,7 +169,7 @@ func (p *ClaudeProvider) Assess(ctx context.Context, req AssessmentRequest) ([]A
 	findings, parseErr := assess.ParseAssessments(raw)
 	if parseErr == nil {
 		assess.ValidateAnchors(req, findings)
-		return findings, nil
+		return assess.RefineAssessments(req, findings), nil
 	}
 
 	repaired, repairErr := p.complete(ctx, assess.RepairSystemPrompt, raw, 2048)
@@ -183,7 +183,7 @@ func (p *ClaudeProvider) Assess(ctx context.Context, req AssessmentRequest) ([]A
 	}
 
 	assess.ValidateAnchors(req, findings)
-	return findings, nil
+	return assess.RefineAssessments(req, findings), nil
 }
 
 // Review mirrors Assess but drives the plain PR-review path: a different
@@ -212,6 +212,7 @@ func (p *ClaudeProvider) Review(ctx context.Context, req AssessmentRequest) (Rev
 	result, parseErr := assess.ParseReview(raw)
 	if parseErr == nil {
 		assess.ValidateAnchors(req, result.Findings)
+		result.Findings = assess.RefineAssessments(req, result.Findings)
 		return result, nil
 	}
 
@@ -226,6 +227,7 @@ func (p *ClaudeProvider) Review(ctx context.Context, req AssessmentRequest) (Rev
 	}
 
 	assess.ValidateAnchors(req, result.Findings)
+	result.Findings = assess.RefineAssessments(req, result.Findings)
 	return result, nil
 }
 
