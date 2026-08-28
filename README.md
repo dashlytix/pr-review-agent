@@ -14,7 +14,7 @@ Implementation of `ADR-001` / the accompanying Tech Spec (`AI_CI_Agent_ADR_TechS
 | `internal/gather` | §2.1, §3 | GitHub API calls for the log tail, PR diff, touched files; language-aware failure-line extraction (Go/Rust/TS/SQL, §1); `GatherForReview` skips the log tail for the review path, where no CI run exists |
 | `internal/provider` | §4.2 | `Provider` interface (`Assess` and `Review` both return `[]Assessment`), `ClaudeProvider`, `OpenAIProvider` |
 | `internal/assess` | §4.2, §6.1 | Prompt building, JSON array parsing + one bounded repair attempt, diff-anchor validation — all applied per-finding; `Review*`-prefixed prompt/parse functions serve the PR-review path, where no category is mandatory |
-| `internal/post` | §4.3, §4.4, §6.3 | Posts a GitHub pull request *review* per run — not a flat comment: a structured assessment report (Executive Summary / Diagnosis / Additional Findings table / Recommendation) as the review's top-level body, and one inline comment per anchored finding, at its exact `file:line`. Marker-based idempotency (against the PR's reviews, not its issue comments), stale-head handling; `RenderReviewReview`/`PostReview` are the plain-review path's counterparts, keyed by a distinct `reviewMarker` |
+| `internal/post` | §4.3, §4.4, §6.3 | Posts a GitHub pull request *review* per run — not a flat comment: a structured assessment report (Executive Summary / Diagnosis / Additional Findings / Recommendation) as the review's top-level body, and one inline comment per anchored finding, at its exact `file:line`. Marker-based idempotency (against the PR's reviews, not its issue comments), stale-head handling; `RenderReviewReview`/`PostReview` are the plain-review path's counterparts, keyed by a distinct `reviewMarker` |
 | `internal/ghclient` | — | Shared GitHub REST client with retry/backoff on rate limiting (not named as its own package in the spec, but needed by both `gather` and `post`) |
 | `eval/` | §9 | Evaluation harness — 20 fixtures across the four target languages and a scoring CLI (scores the mandatory `ci-failure` finding against each fixture's known answer) |
 
@@ -136,10 +136,14 @@ report and one inline comment per finding, anchored directly on its diff line.
     summary (e.g. "2 additional finding(s) were identified in this diff (1 critical, 1
     warning)"), meant to stand alone for a reader who never scrolls further.
   - `### Diagnosis` (CI-failure path only) — the mandatory `ci-failure` finding's
-    severity/confidence/category as a table, followed by its prose and suggested fix.
-  - `### Additional Findings` / `### Findings` — every other finding as one table row
-    (`# | Location | Category | Severity | Confidence | Summary`), whether or not it also
-    became an inline comment.
+    severity/confidence/category as a short bullet list, followed by its prose and suggested
+    fix.
+  - `### Additional Findings` / `### Findings` — every other finding as a numbered prose
+    block (`**N. \`file:line\`** — CATEGORY · Pn · confidence`, then the finding's comment),
+    whether or not it also became an inline comment. Deliberately not a markdown table:
+    GitHub's table layout doesn't reflow on a narrow viewport (mobile, a sidebar diff panel)
+    and forces long headers/cells to wrap character-by-character once a column is narrower
+    than the word it holds -- a numbered prose block wraps like any other paragraph instead.
   - `### Recommendation` — a merge verdict derived from `post.OverallImpact`'s whole-PR risk
     label: Critical → block merge, Warning → review required, Good → clear to proceed.
 - **Inline comments**: one per finding where `Anchored == true` — full category/severity/
