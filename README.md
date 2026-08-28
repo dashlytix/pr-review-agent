@@ -14,7 +14,7 @@ Implementation of `ADR-001` / the accompanying Tech Spec (`AI_CI_Agent_ADR_TechS
 | `internal/gather` | §2.1, §3 | GitHub API calls for the log tail, PR diff, touched files; language-aware failure-line extraction (Go/Rust/TS/SQL, §1); `GatherForReview` skips the log tail for the review path, where no CI run exists |
 | `internal/provider` | §4.2 | `Provider` interface (`Assess` and `Review` both return `[]Assessment`), `ClaudeProvider`, `OpenAIProvider` |
 | `internal/assess` | §4.2, §6.1 | Prompt building, JSON array parsing + one bounded repair attempt, diff-anchor validation — all applied per-finding; `Review*`-prefixed prompt/parse functions serve the PR-review path, where no category is mandatory |
-| `internal/post` | §4.3, §4.4, §6.3 | Posts a GitHub pull request *review* per run — not a flat comment: a top-level summary (the `ci-failure` diagnosis, plus 🔴/🟡/🟢 severity counts) and one inline comment per anchored finding, at its exact `file:line`. Marker-based idempotency (against the PR's reviews, not its issue comments), stale-head handling; `RenderReviewReview`/`PostReview` are the plain-review path's counterparts, keyed by a distinct `reviewMarker` |
+| `internal/post` | §4.3, §4.4, §6.3 | Posts a GitHub pull request *review* per run — not a flat comment: a structured assessment report (Executive Summary / Diagnosis / Additional Findings table / Recommendation) as the review's top-level body, and one inline comment per anchored finding, at its exact `file:line`. Marker-based idempotency (against the PR's reviews, not its issue comments), stale-head handling; `RenderReviewReview`/`PostReview` are the plain-review path's counterparts, keyed by a distinct `reviewMarker` |
 | `internal/ghclient` | — | Shared GitHub REST client with retry/backoff on rate limiting (not named as its own package in the spec, but needed by both `gather` and `post`) |
 | `eval/` | §9 | Evaluation harness — 20 fixtures across the four target languages and a scoring CLI (scores the mandatory `ci-failure` finding against each fixture's known answer) |
 
@@ -125,19 +125,28 @@ and a CI-failure comment landing on the same commit SHA never shadow each other 
 idempotency lookup. It posts a GitHub pull request review only — no Slack notification for
 review completion; see "Slack notifications" below for what Slack does get.
 
-## Review shape: summary + inline comments
+## Review shape: assessment report + inline comments
 
 Both entry points post a GitHub pull request **review** (`POST /pulls/{n}/reviews`), not a
-flat issue comment — the same shape GitHub Copilot's PR review uses: a top-level summary and
-one inline comment per finding, anchored directly on its diff line.
+flat issue comment — the same shape GitHub Copilot's PR review uses: a structured top-level
+report and one inline comment per finding, anchored directly on its diff line.
 
-- **Summary** (the review's `body`): for the CI-failure path, leads with the mandatory
-  `ci-failure` diagnosis; either path follows with a `🔴 N critical   🟡 N warning   🟢 N nit`
-  count line and a bullet per finding that didn't become an inline comment.
+- **Report** (the review's `body`): a fixed section order —
+  - `### Executive Summary` — a short procedural headline: outcome plus a finding-count
+    summary (e.g. "2 additional finding(s) were identified in this diff (1 critical, 1
+    warning)"), meant to stand alone for a reader who never scrolls further.
+  - `### Diagnosis` (CI-failure path only) — the mandatory `ci-failure` finding's
+    severity/confidence/category as a table, followed by its prose and suggested fix.
+  - `### Additional Findings` / `### Findings` — every other finding as one table row
+    (`# | Location | Category | Severity | Confidence | Summary`), whether or not it also
+    became an inline comment.
+  - `### Recommendation` — a merge verdict derived from `post.OverallImpact`'s whole-PR risk
+    label: Critical → block merge, Warning → review required, Good → clear to proceed.
 - **Inline comments**: one per finding where `Anchored == true` — full category/severity/
   confidence/comment/suggested-fix detail, posted at that exact `file:line`.
-- **Severity emoji** (`post.severityEmoji`): `P0`/`P1` → 🔴, `P2`/`P3` → 🟡, `nit` → 🟢 — the
-  same three-color signal in both the summary counts and every inline comment.
+- **Severity bucketing** (`post.severityBucket`): `P0`/`P1` → critical, `P2`/`P3` → warning,
+  `nit` → nit — used to compute the executive summary's finding counts; the report itself
+  uses plain P0–P3/nit labels rather than a color signal.
 - The review's `event` is always `"COMMENT"` — this agent reports findings, it never blocks a
   merge (`REQUEST_CHANGES`) or grants one (`APPROVE`).
 
