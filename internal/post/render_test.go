@@ -22,8 +22,8 @@ func TestRenderAssessmentReview_DiagnosisIsInDiagnosisSectionNotInlineComment(t 
 	if !strings.Contains(summary, "### Diagnosis") || !strings.Contains(summary, "nil owner check") {
 		t.Errorf("expected a Diagnosis section carrying the ci-failure finding, got:\n%s", summary)
 	}
-	if !strings.Contains(summary, "| P1 | High | ci-failure |") {
-		t.Errorf("expected a diagnosis table row with severity/confidence/category, got:\n%s", summary)
+	if !strings.Contains(summary, "**Severity:** P1") || !strings.Contains(summary, "**Confidence:** High") || !strings.Contains(summary, "**Category:** ci-failure") {
+		t.Errorf("expected diagnosis bullets for severity/confidence/category, got:\n%s", summary)
 	}
 	if len(comments) != 0 {
 		t.Errorf("the mandatory ci-failure finding must never become an inline comment, got %+v", comments)
@@ -48,14 +48,14 @@ func TestRenderAssessmentReview_AnchoredExtraFindingBecomesInlineComment(t *test
 		t.Errorf("comment body = %q, want the finding's text and its uppercased category", comments[0].Body)
 	}
 	if !strings.Contains(summary, "### Additional Findings") || !strings.Contains(summary, "hardcoded credential") {
-		t.Errorf("summary = %q, want an Additional Findings table row for the extra finding", summary)
+		t.Errorf("summary = %q, want an Additional Findings entry for the extra finding", summary)
 	}
 	if !strings.Contains(summary, "1 critical") {
 		t.Errorf("summary = %q, want the executive summary to count the extra finding as critical", summary)
 	}
 }
 
-func TestRenderAssessmentReview_UnanchoredFindingStaysInTableOnly(t *testing.T) {
+func TestRenderAssessmentReview_UnanchoredFindingStaysInListOnly(t *testing.T) {
 	findings := []provider.Assessment{
 		{File: "a.go", Line: 1, Category: "ci-failure", Severity: "P1", Comment: "x", Confidence: "high", Anchored: true},
 		{File: "vehicles/garage.go", Line: 999, Category: "style", Severity: "nit", Comment: "unclear naming", Confidence: "low", Anchored: false},
@@ -282,37 +282,32 @@ func TestSeverityBucket(t *testing.T) {
 
 // A finding's File field is free-form LLM output (internal/assess/parse.go
 // only validates Category/Severity/Confidence, never File's content) --
-// unlike Category/Severity/Confidence, a stray "|" or newline in File must
-// not be allowed to corrupt the Location column and shift every other
-// column in that table row.
-func TestRenderFindingsTable_SanitizesFileInLocationColumn(t *testing.T) {
+// unlike Category/Severity/Confidence, a stray newline in File must not be
+// allowed to break the "**N. `loc`**" line's markdown structure.
+func TestRenderFindingsList_SanitizesFileInLocation(t *testing.T) {
 	findings := []provider.Assessment{
-		{File: "a.go | b.go\nc.go", Line: 5, Category: "correctness", Severity: "P2", Comment: "x", Confidence: "medium", Anchored: false},
+		{File: "a.go\nb.go", Line: 5, Category: "correctness", Severity: "P2", Comment: "x", Confidence: "medium", Anchored: false},
 	}
-	table, _, _ := renderFindingsTable(findings, true)
+	list, _, _ := renderFindingsList(findings, true)
 
-	rows := strings.Split(strings.TrimRight(table, "\n"), "\n")
-	if len(rows) != 3 {
-		t.Fatalf("table = %q, want exactly 3 lines (header, delimiter, one data row) -- a raw newline in File must not split it into more", table)
+	if strings.Contains(list, "a.go\nb.go") {
+		t.Errorf("list = %q, want the raw newline in File collapsed, not left to break the entry's markdown", list)
 	}
-	dataRow := rows[2]
-	if unescaped := strings.ReplaceAll(dataRow, `\|`, ""); strings.Count(unescaped, "|") != 7 {
-		t.Errorf("data row = %q, want exactly 7 unescaped pipes (6 columns), got %d", dataRow, strings.Count(unescaped, "|"))
-	}
-	if strings.Contains(table, "a.go | b.go") {
-		t.Errorf("table = %q, want the literal pipe in File escaped, not left to split the row", table)
-	}
-	if !strings.Contains(table, `a.go \| b.go`) {
-		t.Errorf("table = %q, want the File field's pipe escaped as \\|", table)
+	if !strings.Contains(list, "a.go b.go:5") {
+		t.Errorf("list = %q, want File's newline folded to a space", list)
 	}
 }
 
-func TestTableCell_EscapesPipesAndFoldsNewlines(t *testing.T) {
-	got := tableCell("a | b\nc")
-	if strings.Contains(got, "\n") {
-		t.Errorf("tableCell(%q) = %q, want no raw newline (would break the table row)", "a | b\nc", got)
+func TestSanitizeInline_CollapsesWhitespace(t *testing.T) {
+	got := sanitizeInline("a\nb\t c")
+	if got != "a b c" {
+		t.Errorf("sanitizeInline(%q) = %q, want %q", "a\nb\t c", got, "a b c")
 	}
-	if !strings.Contains(got, `\|`) {
-		t.Errorf("tableCell(%q) = %q, want the literal pipe escaped", "a | b\nc", got)
+}
+
+func TestRenderFindingsList_EmptyReturnsEmptyString(t *testing.T) {
+	list, comments, counts := renderFindingsList(nil, true)
+	if list != "" || comments != nil || counts != (severityCounts{}) {
+		t.Errorf("renderFindingsList(nil) = (%q, %+v, %+v), want all zero values", list, comments, counts)
 	}
 }
