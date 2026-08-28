@@ -7,7 +7,7 @@ import (
 	"github.com/dimension/ai-ci-agent/internal/provider"
 )
 
-func TestRenderAssessmentReview_DiagnosisIsSummaryLeadNotInlineComment(t *testing.T) {
+func TestRenderAssessmentReview_DiagnosisIsInDiagnosisSectionNotInlineComment(t *testing.T) {
 	findings := []provider.Assessment{{
 		File: "vehicles/garage.go", Line: 41, Category: "ci-failure",
 		Severity: "P1", Comment: "nil owner check", SuggestedFix: "check g == nil first",
@@ -19,8 +19,11 @@ func TestRenderAssessmentReview_DiagnosisIsSummaryLeadNotInlineComment(t *testin
 	if !strings.Contains(summary, marker("abc1234")) {
 		t.Error("summary must embed the marker for its own SHA, for §6.3 idempotency lookup")
 	}
-	if !strings.Contains(summary, "nil owner check") || !strings.Contains(summary, "🔴") {
-		t.Errorf("expected the ci-failure diagnosis (with its severity emoji) in the summary, got:\n%s", summary)
+	if !strings.Contains(summary, "### Diagnosis") || !strings.Contains(summary, "nil owner check") {
+		t.Errorf("expected a Diagnosis section carrying the ci-failure finding, got:\n%s", summary)
+	}
+	if !strings.Contains(summary, "| P1 | High | ci-failure |") {
+		t.Errorf("expected a diagnosis table row with severity/confidence/category, got:\n%s", summary)
 	}
 	if len(comments) != 0 {
 		t.Errorf("the mandatory ci-failure finding must never become an inline comment, got %+v", comments)
@@ -41,15 +44,18 @@ func TestRenderAssessmentReview_AnchoredExtraFindingBecomesInlineComment(t *test
 	if comments[0].Path != "vehicles/other.go" || comments[0].Line != 7 {
 		t.Errorf("comment = %+v, want it anchored at vehicles/other.go:7", comments[0])
 	}
-	if !strings.Contains(comments[0].Body, "hardcoded credential") || !strings.Contains(comments[0].Body, "🔴") {
-		t.Errorf("comment body = %q, want the finding's text and its severity emoji", comments[0].Body)
+	if !strings.Contains(comments[0].Body, "hardcoded credential") || !strings.Contains(comments[0].Body, "SECURITY") {
+		t.Errorf("comment body = %q, want the finding's text and its uppercased category", comments[0].Body)
 	}
-	if !strings.Contains(summary, "🔴 1 critical") {
-		t.Errorf("summary = %q, want a severity count line for the extra finding", summary)
+	if !strings.Contains(summary, "### Additional Findings") || !strings.Contains(summary, "hardcoded credential") {
+		t.Errorf("summary = %q, want an Additional Findings table row for the extra finding", summary)
+	}
+	if !strings.Contains(summary, "1 critical") {
+		t.Errorf("summary = %q, want the executive summary to count the extra finding as critical", summary)
 	}
 }
 
-func TestRenderAssessmentReview_UnanchoredFindingStaysInSummaryOnly(t *testing.T) {
+func TestRenderAssessmentReview_UnanchoredFindingStaysInTableOnly(t *testing.T) {
 	findings := []provider.Assessment{
 		{File: "a.go", Line: 1, Category: "ci-failure", Severity: "P1", Comment: "x", Confidence: "high", Anchored: true},
 		{File: "vehicles/garage.go", Line: 999, Category: "style", Severity: "nit", Comment: "unclear naming", Confidence: "low", Anchored: false},
@@ -61,7 +67,7 @@ func TestRenderAssessmentReview_UnanchoredFindingStaysInSummaryOnly(t *testing.T
 		t.Errorf("an unanchored finding must never become an inline comment, got %+v", comments)
 	}
 	if !strings.Contains(summary, "unclear naming") {
-		t.Errorf("an unanchored finding must still be visible somewhere in the summary, got:\n%s", summary)
+		t.Errorf("an unanchored finding must still be visible somewhere in the report, got:\n%s", summary)
 	}
 }
 
@@ -81,6 +87,20 @@ func TestRenderAssessmentReview_StaleHeadDropsAllAnchorsAndNotesBothSHAs(t *test
 	}
 	if !strings.Contains(summary, marker("abc1234")) {
 		t.Error("the marker must still key off the reviewed SHA, not the current head")
+	}
+}
+
+func TestRenderAssessmentReview_RecommendationReflectsRisk(t *testing.T) {
+	critical := []provider.Assessment{{Category: "ci-failure", Severity: "P0", Confidence: "high", Comment: "x"}}
+	summary, _ := RenderAssessmentReview(critical, "abc1234", "")
+	if !strings.Contains(summary, "### Recommendation") || !strings.Contains(summary, "Block merge") {
+		t.Errorf("expected a block-merge recommendation for a P0 diagnosis, got:\n%s", summary)
+	}
+
+	warning := []provider.Assessment{{Category: "ci-failure", Severity: "P1", Confidence: "high", Comment: "x"}}
+	summary, _ = RenderAssessmentReview(warning, "abc1234", "")
+	if !strings.Contains(summary, "Review the findings above") {
+		t.Errorf("expected a review-required recommendation for a P1-only diagnosis, got:\n%s", summary)
 	}
 }
 
@@ -110,13 +130,13 @@ func TestRenderReviewReview_NoIssuesSaysSo(t *testing.T) {
 	result := provider.ReviewResult{Summary: "Adds a health-check endpoint to the HTTP API."}
 	summary, comments := RenderReviewReview(result, "abc1234", false)
 
-	if !strings.Contains(summary, "## Summary\nAdds a health-check endpoint") {
-		t.Errorf("expected the Summary section to lead the comment, got:\n%s", summary)
+	if !strings.Contains(summary, "### Executive Summary\n\nAdds a health-check endpoint") {
+		t.Errorf("expected the Executive Summary section to lead the report, got:\n%s", summary)
 	}
-	if !strings.Contains(summary, "**Overall impact:** 🟢 Good") {
-		t.Errorf("expected a 🟢 Good overall impact with zero findings, got:\n%s", summary)
+	if !strings.Contains(summary, "**Risk level:** Good") {
+		t.Errorf("expected a Good risk level with zero findings, got:\n%s", summary)
 	}
-	if !strings.Contains(summary, "No issues found") {
+	if !strings.Contains(summary, "No issues were identified") {
 		t.Errorf("expected an explicit no-issues message for an empty findings slice, got:\n%s", summary)
 	}
 	if !strings.Contains(summary, reviewMarker("abc1234")) {
@@ -129,8 +149,8 @@ func TestRenderReviewReview_NoIssuesSaysSo(t *testing.T) {
 
 func TestRenderReviewReview_NoSummaryOmitsSection(t *testing.T) {
 	summary, _ := RenderReviewReview(provider.ReviewResult{}, "abc1234", false)
-	if strings.Contains(summary, "## Summary") {
-		t.Errorf("expected no Summary section when Summary is empty, got:\n%s", summary)
+	if strings.Contains(summary, "### Executive Summary") {
+		t.Errorf("expected no Executive Summary section when Summary is empty, got:\n%s", summary)
 	}
 }
 
@@ -168,11 +188,14 @@ func TestRenderReviewReview_AnchoredFindingsBecomeInlineComments(t *testing.T) {
 	if comments[1].Path != "b.go" || comments[1].Line != 7 || !strings.Contains(comments[1].Body, "hardcoded credential") {
 		t.Errorf("comments[1] = %+v, want it anchored at b.go:7 with the credential text", comments[1])
 	}
-	if !strings.Contains(summary, "🔴 1 critical") || !strings.Contains(summary, "🟡 1 warning") {
-		t.Errorf("summary = %q, want severity counts for both findings", summary)
+	if !strings.Contains(summary, "### Findings") {
+		t.Errorf("summary = %q, want a Findings section", summary)
 	}
-	if !strings.Contains(summary, "**Overall impact:** 🔴 Critical") {
-		t.Errorf("summary = %q, want 🔴 Critical overall impact since a P0 finding is present", summary)
+	if !strings.Contains(summary, "**Risk level:** Critical") {
+		t.Errorf("summary = %q, want a Critical risk level since a P0 finding is present", summary)
+	}
+	if !strings.Contains(summary, "Block merge") {
+		t.Errorf("summary = %q, want a block-merge recommendation for a Critical risk level", summary)
 	}
 }
 
@@ -244,15 +267,25 @@ func TestMarker_DiffersBySHA(t *testing.T) {
 	}
 }
 
-func TestSeverityEmoji(t *testing.T) {
+func TestSeverityBucket(t *testing.T) {
 	tests := []struct{ severity, want string }{
-		{"P0", "🔴"}, {"P1", "🔴"},
-		{"P2", "🟡"}, {"P3", "🟡"},
-		{"nit", "🟢"}, {"", "🟢"},
+		{"P0", "critical"}, {"P1", "critical"},
+		{"P2", "warning"}, {"P3", "warning"},
+		{"nit", "nit"}, {"", "nit"},
 	}
 	for _, tt := range tests {
-		if got := severityEmoji(tt.severity); got != tt.want {
-			t.Errorf("severityEmoji(%q) = %q, want %q", tt.severity, got, tt.want)
+		if got := severityBucket(tt.severity); got != tt.want {
+			t.Errorf("severityBucket(%q) = %q, want %q", tt.severity, got, tt.want)
 		}
+	}
+}
+
+func TestTableCell_EscapesPipesAndFoldsNewlines(t *testing.T) {
+	got := tableCell("a | b\nc")
+	if strings.Contains(got, "\n") {
+		t.Errorf("tableCell(%q) = %q, want no raw newline (would break the table row)", "a | b\nc", got)
+	}
+	if !strings.Contains(got, `\|`) {
+		t.Errorf("tableCell(%q) = %q, want the literal pipe escaped", "a | b\nc", got)
 	}
 }
