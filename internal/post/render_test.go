@@ -280,6 +280,33 @@ func TestSeverityBucket(t *testing.T) {
 	}
 }
 
+// A finding's File field is free-form LLM output (internal/assess/parse.go
+// only validates Category/Severity/Confidence, never File's content) --
+// unlike Category/Severity/Confidence, a stray "|" or newline in File must
+// not be allowed to corrupt the Location column and shift every other
+// column in that table row.
+func TestRenderFindingsTable_SanitizesFileInLocationColumn(t *testing.T) {
+	findings := []provider.Assessment{
+		{File: "a.go | b.go\nc.go", Line: 5, Category: "correctness", Severity: "P2", Comment: "x", Confidence: "medium", Anchored: false},
+	}
+	table, _, _ := renderFindingsTable(findings, true)
+
+	rows := strings.Split(strings.TrimRight(table, "\n"), "\n")
+	if len(rows) != 3 {
+		t.Fatalf("table = %q, want exactly 3 lines (header, delimiter, one data row) -- a raw newline in File must not split it into more", table)
+	}
+	dataRow := rows[2]
+	if unescaped := strings.ReplaceAll(dataRow, `\|`, ""); strings.Count(unescaped, "|") != 7 {
+		t.Errorf("data row = %q, want exactly 7 unescaped pipes (6 columns), got %d", dataRow, strings.Count(unescaped, "|"))
+	}
+	if strings.Contains(table, "a.go | b.go") {
+		t.Errorf("table = %q, want the literal pipe in File escaped, not left to split the row", table)
+	}
+	if !strings.Contains(table, `a.go \| b.go`) {
+		t.Errorf("table = %q, want the File field's pipe escaped as \\|", table)
+	}
+}
+
 func TestTableCell_EscapesPipesAndFoldsNewlines(t *testing.T) {
 	got := tableCell("a | b\nc")
 	if strings.Contains(got, "\n") {

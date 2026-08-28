@@ -248,9 +248,9 @@ func renderFindingsTable(findings []provider.Assessment, allowAnchors bool) (tab
 		loc := "unanchored"
 		switch {
 		case f.File != "" && f.Line > 0:
-			loc = fmt.Sprintf("`%s:%d`", f.File, f.Line)
+			loc = fmt.Sprintf("`%s:%d`", tableCell(f.File), f.Line)
 		case f.File != "":
-			loc = fmt.Sprintf("`%s`", f.File)
+			loc = fmt.Sprintf("`%s`", tableCell(f.File))
 		}
 
 		fmt.Fprintf(&b, "| %d | %s | %s | %s | %s | %s |\n",
