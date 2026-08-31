@@ -46,6 +46,77 @@ func TestGetJSON_SendsAuthAndDecodesBody(t *testing.T) {
 	}
 }
 
+type fakeTokenSource struct {
+	token string
+	err   error
+	calls int
+}
+
+func (f *fakeTokenSource) Token(ctx context.Context) (string, error) {
+	f.calls++
+	return f.token, f.err
+}
+
+func TestDo_TokenSourceOverridesStaticToken(t *testing.T) {
+	var gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		json.NewEncoder(w).Encode(map[string]string{})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	c.Token = "static-token"
+	ts := &fakeTokenSource{token: "dynamic-token"}
+	c.TokenSource = ts
+
+	var out map[string]string
+	if err := c.GetJSON(context.Background(), "/whatever", &out); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotAuth != "Bearer dynamic-token" {
+		t.Errorf("Authorization header = %q, want Bearer dynamic-token (from TokenSource, not the static Token field)", gotAuth)
+	}
+	if ts.calls != 1 {
+		t.Errorf("TokenSource.Token called %d times, want 1", ts.calls)
+	}
+}
+
+func TestDo_NilTokenSourceUsesStaticToken(t *testing.T) {
+	var gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		json.NewEncoder(w).Encode(map[string]string{})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	c.Token = "static-token"
+
+	var out map[string]string
+	if err := c.GetJSON(context.Background(), "/whatever", &out); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotAuth != "Bearer static-token" {
+		t.Errorf("Authorization header = %q, want Bearer static-token", gotAuth)
+	}
+}
+
+func TestDo_TokenSourceErrorFailsTheRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("must not reach the network when the token source errors")
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	c.TokenSource = &fakeTokenSource{err: errors.New("token refresh failed")}
+
+	var out map[string]string
+	if err := c.GetJSON(context.Background(), "/whatever", &out); err == nil {
+		t.Fatal("expected an error when the token source fails")
+	}
+}
+
 func TestRepoPath_BuildsExpectedPath(t *testing.T) {
 	c := New("t", "acme", "widgets")
 	got := c.RepoPath("/pulls/%d/files?per_page=%d", 7, 100)

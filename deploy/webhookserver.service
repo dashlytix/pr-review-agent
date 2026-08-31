@@ -1,0 +1,21 @@
+[Unit]
+Description=ai-ci-agent GitHub webhook server (cmd/webhookserver)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ai-ci-agent-webhookserver
+EnvironmentFile=/etc/ai-ci-agent/webhookserver.env
+Restart=on-failure
+RestartSec=5
+# Inbound HTTP (the webhook endpoint itself) plus outbound HTTPS (GitHub
+# API, LLM provider, optionally Slack) -- unlike slackbot.service, this
+# one does need to accept connections, but nothing beyond the port
+# WEBHOOK_LISTEN_ADDR names; still no elevated privileges required.
+User=ai-ci-agent
+Group=ai-ci-agent
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
