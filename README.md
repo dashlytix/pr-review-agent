@@ -264,3 +264,4 @@ These are the spec's own open questions, unresolved here too:
 - End-to-end verification is manual, not a checked-in test: the agent binary was run against a local GitHub API stub (via `GITHUB_API_URL`) with a live LLM behind `llm-base-url`, and both providers produced a correct nil-guard-removal diagnosis. Worth turning into a fixture-driven integration test with a recorded provider response.
 
 <!-- test/webhook-live-check: verifying the new inbound webhook path posts a real review -->
+<!-- retry: 2026-08-31T07:41:29Z -->
