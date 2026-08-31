@@ -13,15 +13,21 @@
 //
 // GITHUB_EVENT_NAME=pull_request drives both a Slack lifecycle
 // notification (opened/closed/merged) and, independent of any CI
-// outcome, a full code review on opened/synchronize (reviewPR) — the two
-// are unrelated: every pull_request event gets the Slack ping, and
-// opened/synchronize additionally get the review. All Slack notifications
-// for one PR -- opened, CI failure, AI review, closed -- share a single
-// Slack thread: "opened" posts the one top-level root message and saves
-// its ts (via notify.SaveThreadRoot), every later event replies under it
-// (via notify.FindThreadRoot + replyInThread), and a missing/unlookupable
-// root is handled gracefully rather than falling back to a new top-level
-// message.
+// outcome, a full code review on opened/synchronize
+// (orchestrate.ReviewPR) — the two are unrelated: every pull_request
+// event gets the Slack ping, and opened/synchronize additionally get the
+// review. All Slack notifications for one PR -- opened, CI failure, AI
+// review, closed -- share a single Slack thread: "opened" posts the one
+// top-level root message and saves its ts (via notify.SaveThreadRoot),
+// every later event replies under it (via notify.FindThreadRoot +
+// orchestrate.ReplyInThread), and a missing/unlookupable root is handled
+// gracefully rather than falling back to a new top-level message.
+//
+// The pull_request handling itself (orchestrate.HandlePullRequestEvent,
+// orchestrate.ReviewPR) lives in internal/orchestrate, not here — see
+// that package's doc comment for why: internal/webhook's inbound GitHub
+// webhook handler calls the exact same functions for the same event
+// type, rather than duplicating this logic.
 package main
 
 import (
@@ -40,6 +46,7 @@ import (
 	"github.com/dimension/ai-ci-agent/internal/gather"
 	"github.com/dimension/ai-ci-agent/internal/ghclient"
 	"github.com/dimension/ai-ci-agent/internal/notify"
+	"github.com/dimension/ai-ci-agent/internal/orchestrate"
 	"github.com/dimension/ai-ci-agent/internal/post"
 	"github.com/dimension/ai-ci-agent/internal/provider"
 )
@@ -66,30 +73,6 @@ type workflowRunEvent struct {
 			Number int `json:"number"`
 		} `json:"pull_requests"`
 	} `json:"workflow_run"`
-}
-
-// pullRequestEvent is the GITHUB_EVENT_PATH payload for
-// GITHUB_EVENT_NAME=pull_request. It drives both the Slack lifecycle
-// notifications (opened/closed/merged) and, on opened/synchronize, the
-// plain PR-review path (reviewPR) — Head.SHA and Body are used by both.
-type pullRequestEvent struct {
-	Action      string `json:"action"`
-	PullRequest struct {
-		Number  int    `json:"number"`
-		Title   string `json:"title"`
-		HTMLURL string `json:"html_url"`
-		Body    string `json:"body"`
-		User    struct {
-			Login string `json:"login"`
-		} `json:"user"`
-		Base struct {
-			Ref string `json:"ref"`
-		} `json:"base"`
-		Head struct {
-			SHA string `json:"sha"`
-		} `json:"head"`
-		Merged bool `json:"merged"`
-	} `json:"pull_request"`
 }
 
 // reconcileRunLimit bounds how many recent failed runs the schedule
@@ -142,13 +125,16 @@ func run() error {
 		if err != nil {
 			return fmt.Errorf("read pull_request event: %w", err)
 		}
-		if err := handlePullRequestEvent(ctx, client, event, repo, slackCfg); err != nil {
+		if err := orchestrate.HandlePullRequestEvent(ctx, client, event, repo, slackCfg); err != nil {
 			return err
 		}
 
 		// opened/synchronize also get a full code review — closed and any
-		// other action stop here, same as handlePullRequestEvent's own
-		// no-op default for actions it doesn't send a Slack ping for.
+		// other action stop here, same as HandlePullRequestEvent's own
+		// no-op default for actions it doesn't send a Slack ping for. This
+		// Action-triggered path deliberately keeps its historical gate
+		// (not orchestrate.ShouldReview, which also reviews "reopened") —
+		// see ShouldReview's doc comment.
 		if event.Action != "opened" && event.Action != "synchronize" {
 			return nil
 		}
@@ -163,7 +149,7 @@ func run() error {
 			return err
 		}
 		pr := event.PullRequest
-		return reviewPR(ctx, client, llmProvider, pr.Number, pr.Head.SHA, slackCfg)
+		return orchestrate.ReviewPR(ctx, client, llmProvider, pr.Number, pr.Head.SHA, slackCfg)
 	}
 
 	// The remaining paths (schedule, workflow_run) drive an LLM
@@ -219,83 +205,6 @@ func buildProvider(providerName, apiKey, llmBaseURL, llmModel, llmProxyAPIKey, l
 	return provider.New(llmCfg) // unsupported provider name fails fast here, per §7
 }
 
-// handlePullRequestEvent sends a Slack lifecycle notification for a PR
-// opened/closed/merged webhook event. "opened" posts the one top-level
-// root message for the PR and persists its ts (via SaveThreadRoot) so
-// every later event -- CI failure, AI review, closed -- can reply in
-// that same thread instead of posting a new top-level message. Findings/
-// diagnosis text never reach Slack; they stay in the GitHub PR comment
-// posted by reviewPR/investigate.
-//
-// Posting the root message is this path's entire purpose for "opened",
-// so a failure there is returned as this run's error, same as before
-// this thread-based rework. "closed"/"merged" are best-effort thread
-// replies: per the "handle a missing root message gracefully"
-// requirement, a lookup miss or send failure is logged and swallowed
-// rather than failing the run -- there's no comment fallback to protect
-// here, and a closing ping is the least essential of the four events.
-func handlePullRequestEvent(ctx context.Context, client *ghclient.Client, event *pullRequestEvent, repo string, slackCfg notify.SlackConfig) error {
-	pr := event.PullRequest
-	info := notify.PullRequest{
-		Number:  pr.Number,
-		Title:   pr.Title,
-		HTMLURL: pr.HTMLURL,
-		Author:  pr.User.Login,
-		Repo:    repo,
-		BaseRef: pr.Base.Ref,
-		HeadSHA: pr.Head.SHA,
-		Body:    pr.Body,
-	}
-
-	switch {
-	case event.Action == "opened":
-		ts, err := notify.Post(ctx, slackCfg, notify.RenderOpened(info), "")
-		if err != nil {
-			return fmt.Errorf("notify: %w", err)
-		}
-		if ts != "" { // slackCfg was enabled and the send succeeded
-			if err := notify.SaveThreadRoot(ctx, client, pr.Number, ts); err != nil {
-				log.Printf("warning: could not save slack thread root for pr %d: %v", pr.Number, err)
-			}
-		}
-		return nil
-
-	case event.Action == "closed" && !pr.Merged:
-		replyInThread(ctx, client, slackCfg, pr.Number, notify.RenderClosed(info))
-		return nil
-
-	case event.Action == "closed" && pr.Merged:
-		replyInThread(ctx, client, slackCfg, pr.Number, notify.RenderMerged(info))
-		return nil
-
-	default:
-		log.Printf("pull_request action %q: nothing to notify", event.Action)
-		return nil
-	}
-}
-
-// replyInThread posts msg as a reply under prNumber's saved Slack thread
-// root, best-effort: a disabled slackCfg, a missing/unlookupable root,
-// or a send failure are all logged and swallowed rather than raised,
-// since every caller treats its own Slack reply as optional.
-func replyInThread(ctx context.Context, client *ghclient.Client, slackCfg notify.SlackConfig, prNumber int, msg notify.SlackAttachmentMessage) {
-	if !slackCfg.Enabled() {
-		return
-	}
-	ts, err := notify.FindThreadRoot(ctx, client, prNumber)
-	if err != nil {
-		log.Printf("warning: could not look up slack thread for pr %d: %v", prNumber, err)
-		return
-	}
-	if ts == "" {
-		log.Printf("pr %d: no slack thread root found, skipping reply", prNumber)
-		return
-	}
-	if _, err := notify.Post(ctx, slackCfg, msg, ts); err != nil {
-		log.Printf("warning: slack thread reply failed for pr %d: %v", prNumber, err)
-	}
-}
-
 // investigate runs the full gather → assess → post sequence (§5) for one
 // workflow run. Every failure mode past this point (§7) degrades to a
 // posted comment rather than a non-zero exit — only the config checks in
@@ -348,9 +257,9 @@ func investigate(ctx context.Context, client *ghclient.Client, llmProvider provi
 		// and skipped (with a re-post never re-attempted) once already
 		// posted, so a reconcile pass never double-pings Slack. Posted as
 		// a reply under the PR's Slack thread root (see
-		// handlePullRequestEvent's "opened" case), never a new top-level
-		// message -- replyInThread degrades gracefully when that root
-		// can't be found.
+		// orchestrate.HandlePullRequestEvent's "opened" case), never a new
+		// top-level message -- orchestrate.ReplyInThread degrades
+		// gracefully when that root can't be found.
 		if metaErr == nil {
 			// Degrade cases (assessErr != nil) never produced structured
 			// findings to bucket, so the card omits the Impact field
@@ -363,104 +272,13 @@ func investigate(ctx context.Context, client *ghclient.Client, llmProvider provi
 				notify.PullRequest{Number: result.PRNumber, Repo: repo, HTMLURL: meta.HTMLURL, Author: meta.User.Login},
 				impactEmoji, impactLabel,
 			)
-			replyInThread(ctx, client, slackCfg, result.PRNumber, msg)
+			orchestrate.ReplyInThread(ctx, client, slackCfg, result.PRNumber, msg)
 		}
 	}
 
 	writeOutput("comment-url", url)
 	writeOutput("comment-body", summary)
 	return nil
-}
-
-// reviewPR runs a plain PR code review — independent of any CI outcome —
-// for the pull_request opened/synchronize trigger. It mirrors
-// investigate()'s gather → assess → post shape and §7 degrade-gracefully
-// rules, scaled down since there's no CI run to fall back to. Posting
-// uses PostReview/reviewMarker, a distinct marker from investigate()'s,
-// so a review comment and a CI-failure comment on the same commit SHA
-// never collide in the idempotency lookup.
-//
-// A freshly posted (non-degraded, non-already-posted) review also gets
-// a Slack "AI Review" reply under the PR's thread root, mirroring
-// investigate()'s CI-failure notification. Degrade cases (assessErr !=
-// nil) have no structured ReviewResult to summarize, so -- same as
-// before this thread-based rework -- they get no Slack reply at all,
-// only the GitHub fallback comment.
-func reviewPR(ctx context.Context, client *ghclient.Client, llmProvider provider.Provider, prNumber int, headSHA string, slackCfg notify.SlackConfig) error {
-	req, mergeState, gatherErr := gather.GatherForReview(ctx, client, prNumber)
-
-	var result provider.ReviewResult
-	assessErr := gatherErr
-	if gatherErr == nil {
-		result, assessErr = llmProvider.Review(ctx, req)
-	}
-
-	summary, comments := renderReviewSummary(assessErr, result, headSHA, mergeState.Conflicting())
-
-	url, alreadyPosted, err := post.PostReview(ctx, client, prNumber, headSHA, summary, comments)
-	if err != nil {
-		return fmt.Errorf("post: %w", err)
-	}
-	if alreadyPosted {
-		log.Printf("pr %d: review already posted: %s", prNumber, url)
-		return nil
-	}
-
-	log.Printf("pr %d: posted review: %s", prNumber, url)
-	if assessErr == nil {
-		findings, recommendations := reviewFindingsForSlack(result.Findings)
-		msg := notify.RenderAIReview(notify.PullRequest{Number: prNumber}, result.Summary, findings, recommendations)
-		replyInThread(ctx, client, slackCfg, prNumber, msg)
-	}
-	return nil
-}
-
-// reviewFindingsForSlack translates provider.Assessment findings into
-// the plain-string findings/recommendations RenderAIReview renders,
-// keeping the notify package independent of the review/assessment
-// domain types. findings gets one "location — comment" line per
-// assessment; recommendations gets each non-empty SuggestedFix.
-func reviewFindingsForSlack(assessments []provider.Assessment) (findings, recommendations []string) {
-	for _, a := range assessments {
-		loc := a.Category
-		if a.File != "" {
-			loc = fmt.Sprintf("`%s:%d` %s", a.File, a.Line, a.Category)
-		}
-		comment := strings.TrimSpace(a.Comment)
-		if comment == "" {
-			comment = "_none provided_"
-		}
-		findings = append(findings, fmt.Sprintf("%s — %s", loc, comment))
-
-		if fix := strings.TrimSpace(a.SuggestedFix); fix != "" {
-			recommendations = append(recommendations, fix)
-		}
-	}
-	return findings, recommendations
-}
-
-// renderReviewSummary is renderReview's counterpart for the review path:
-// the same §7 degrade-gracefully cases, minus the fallback's raw-logs
-// link (there's no CI run here to link to). conflicting is passed
-// through to the success path only -- the degrade cases already show a
-// generic fallback message and have no structured review to annotate.
-func renderReviewSummary(assessErr error, result provider.ReviewResult, headSHA string, conflicting bool) (string, []post.ReviewComment) {
-	switch {
-	case assessErr == nil:
-		return post.RenderReviewReview(result, headSHA, conflicting)
-
-	case errors.Is(assessErr, assess.ErrMalformed):
-		log.Printf("review malformed after repair attempt: %v", assessErr)
-		return post.RenderReviewMinimal("the model's output could not be parsed as a valid review, even after one repair attempt"), nil
-
-	case isRateLimited(assessErr):
-		log.Printf("rate limited: %v", assessErr)
-		return post.RenderReviewMinimal("the GitHub API rate limit was hit while gathering the diff"), nil
-
-	default:
-		log.Printf("provider unavailable: %v", assessErr)
-		return post.RenderReviewFallback(), nil
-	}
 }
 
 // reconcile is the §7 backstop for a dropped webhook: sweep recent
@@ -510,7 +328,7 @@ func renderReview(assessErr error, findings []provider.Assessment, result *gathe
 		log.Printf("assessment malformed after repair attempt: %v", assessErr)
 		return post.RenderMinimal("the model's output could not be parsed as a valid assessment, even after one repair attempt"), nil
 
-	case isRateLimited(assessErr):
+	case orchestrate.IsRateLimited(assessErr):
 		log.Printf("rate limited: %v", assessErr)
 		return post.RenderMinimal("the GitHub API rate limit was hit while gathering context"), nil
 
@@ -518,11 +336,6 @@ func renderReview(assessErr error, findings []provider.Assessment, result *gathe
 		log.Printf("provider unavailable: %v", assessErr)
 		return post.RenderFallback(result.RunHTMLURL), nil
 	}
-}
-
-func isRateLimited(err error) bool {
-	var rl *ghclient.RateLimitedError
-	return errors.As(err, &rl)
 }
 
 func fetchPRMeta(ctx context.Context, client *ghclient.Client, prNumber int) (*pullRequestMeta, error) {
@@ -533,7 +346,7 @@ func fetchPRMeta(ctx context.Context, client *ghclient.Client, prNumber int) (*p
 	return &pr, nil
 }
 
-func loadPullRequestEvent(path string) (*pullRequestEvent, error) {
+func loadPullRequestEvent(path string) (*orchestrate.PullRequestEvent, error) {
 	if path == "" {
 		return nil, fmt.Errorf("GITHUB_EVENT_PATH not set")
 	}
@@ -543,7 +356,7 @@ func loadPullRequestEvent(path string) (*pullRequestEvent, error) {
 	}
 	defer f.Close()
 
-	var event pullRequestEvent
+	var event orchestrate.PullRequestEvent
 	if err := json.NewDecoder(f).Decode(&event); err != nil {
 		return nil, err
 	}

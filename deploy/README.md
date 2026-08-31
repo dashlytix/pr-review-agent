@@ -80,3 +80,75 @@ diff. Also worth checking the two fallback paths: mentioning the bot in a
 thread whose PR has since been closed/merged (should reply "couldn't find an
 open PR for this thread") and a message that isn't inside any thread at all
 (should be silently ignored, not answered).
+
+# Deploying the inbound GitHub webhook server (`cmd/webhookserver`)
+
+Like `cmd/slackbot`, `cmd/webhookserver` is an always-on process, not a GitHub
+Action step -- it listens for `POST /webhooks/github` deliveries and, for a
+`pull_request` `opened`/`reopened`/`synchronize` event, runs the same review
+pipeline (`internal/orchestrate`) the Actions-triggered path uses. See
+`internal/webhook`'s package doc comment for the request-handling details.
+
+**This binary authenticates with a plain PAT (`GITHUB_TOKEN`) today, the same
+as every other entrypoint in this repo.** `internal/githubauth` has a
+complete, tested GitHub App JWT + installation-token implementation ready to
+swap in once an App exists (see that package's doc comment) -- nothing in
+`cmd/webhookserver` needs to change beyond how its `ghclient.Client` is
+constructed.
+
+## 1. Build the binary
+
+```
+go build -o /usr/local/bin/ai-ci-agent-webhookserver ./cmd/webhookserver
+```
+
+## 2. Configure credentials
+
+Create `/etc/ai-ci-agent/webhookserver.env` (root-readable only):
+
+```
+GITHUB_WEBHOOK_SECRET=whsec_...        # shared secret configured on the webhook source
+WEBHOOK_LISTEN_ADDR=:8080              # optional, defaults to :8080
+GITHUB_TOKEN=ghp_...
+GITHUB_REPOSITORY=owner/repo
+LLM_PROVIDER=claude                    # or openai
+LLM_API_KEY=sk-...
+SLACK_BOT_TOKEN=xoxb-...               # optional -- omit both to disable Slack notifications
+SLACK_CHANNEL=C...
+```
+
+## 3. Install and start the systemd service
+
+```
+sudo useradd --system --no-create-home ai-ci-agent   # if it doesn't already exist
+sudo cp deploy/webhookserver.service /etc/systemd/system/
+sudo chown ai-ci-agent:ai-ci-agent /usr/local/bin/ai-ci-agent-webhookserver
+sudo chmod 600 /etc/ai-ci-agent/webhookserver.env
+sudo systemctl daemon-reload
+sudo systemctl enable --now webhookserver.service
+```
+
+## 4. What still requires an organization administrator
+
+This service can run today against a plain PAT and manual webhook configuration
+(e.g. a repo-level webhook pointed at this server's public URL, with the same
+secret as `GITHUB_WEBHOOK_SECRET`), which is enough to develop and test against.
+Moving to a real, organization-owned **GitHub App** -- the intended production
+setup -- additionally requires an org admin to:
+
+- **Create the organization-owned GitHub App** in the org's GitHub settings.
+- **Generate the App's private key** (downloaded once as a `.pem` file) and
+  get it to whoever deploys this service, via the org's existing secret-storage
+  process -- not committed to this repo.
+- **Install the App** on whichever repositories should trigger reviews, and
+  record the resulting installation ID.
+- **Configure the App's webhook URL** to point at wherever this server is
+  publicly reachable (this repo has no reverse proxy/TLS/DNS configuration of
+  its own -- see the top-level README's architecture audit for why).
+- **Configure production secrets** (the App's private key, `GITHUB_WEBHOOK_SECRET`,
+  and this service's other env vars) in whatever the org's production secret
+  manager is, rather than the plain env file above (fine for development only).
+
+None of this blocks development or testing today -- see `internal/githubauth`'s
+tests, which exercise the full App-JWT/installation-token flow against a
+locally generated key and a stub server, with no real App required.

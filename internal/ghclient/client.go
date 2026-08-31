@@ -35,6 +35,30 @@ type Client struct {
 	// attempt). Exposed so tests can shrink it instead of waiting out a
 	// real multi-second backoff.
 	RetryBaseDelay time.Duration
+
+	// TokenSource, if set, resolves the bearer token per-request instead
+	// of the fixed Token field -- see internal/githubauth for a GitHub
+	// App-backed implementation (an installation access token expires
+	// after roughly an hour and must be refreshed, unlike a static PAT).
+	// nil (the default) preserves every existing caller's behavior
+	// exactly: Token is used as-is, resolved once at construction.
+	TokenSource TokenSource
+}
+
+// TokenSource resolves an auth token at call time. Implementations may
+// cache internally (see internal/githubauth.InstallationTokenSource) so
+// a busy client doesn't re-authenticate on every single API call.
+type TokenSource interface {
+	Token(ctx context.Context) (string, error)
+}
+
+// resolveToken returns c.Token, or the result of c.TokenSource.Token if
+// one is set.
+func (c *Client) resolveToken(ctx context.Context) (string, error) {
+	if c.TokenSource == nil {
+		return c.Token, nil
+	}
+	return c.TokenSource.Token(ctx)
 }
 
 // New builds a Client for one repository.
@@ -82,6 +106,11 @@ func (c *Client) do(ctx context.Context, method, path string, accept string, bod
 		}
 	}
 
+	token, err := c.resolveToken(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("ghclient: resolve token: %w", err)
+	}
+
 	var lastErr error
 	backoff := c.RetryBaseDelay
 	for attempt := 1; attempt <= c.MaxAttempts; attempt++ {
@@ -94,7 +123,7 @@ func (c *Client) do(ctx context.Context, method, path string, accept string, bod
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("Authorization", "Bearer "+c.Token)
+		req.Header.Set("Authorization", "Bearer "+token)
 		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 		if accept != "" {
 			req.Header.Set("Accept", accept)
