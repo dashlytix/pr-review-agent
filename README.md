@@ -265,3 +265,4 @@ These are the spec's own open questions, unresolved here too:
 
 <!-- test/webhook-live-check: verifying the new inbound webhook path posts a real review -->
 <!-- retry: 2026-08-31T07:41:29Z -->
+<!-- retry2: 2026-08-31T07:44:35Z -->
