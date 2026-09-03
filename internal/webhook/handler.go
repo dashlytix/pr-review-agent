@@ -33,14 +33,19 @@ type Handler struct {
 	// why that default is development-only.
 	Idempotency IdempotencyStore
 
-	// Client is used for every GitHub API call the review pipeline
-	// makes. Its Token/TokenSource determines whether this deployment
-	// authenticates as a static PAT or (once available) a GitHub App
-	// installation -- see internal/githubauth.
-	Client *ghclient.Client
-	// Repo is "owner/repo", passed through to
-	// orchestrate.HandlePullRequestEvent for its Slack notification text.
-	Repo string
+	// Token authenticates every GitHub API call the review pipeline
+	// makes. A single static PAT for now, shared across every repository
+	// this deployment receives webhooks for -- see internal/githubauth
+	// for the GitHub-App-backed, per-installation alternative this is
+	// deliberately structured to swap in later without another change
+	// here (each event handler would resolve a per-repo TokenSource
+	// instead of reusing this one field).
+	Token string
+	// BaseURL overrides the GitHub API host each per-delivery client
+	// uses. Empty in production, where ghclient.New's own
+	// GITHUB_API_URL/default resolution applies; set only by tests to
+	// point at an httptest.Server.
+	BaseURL string
 	// Provider drives the LLM review call.
 	Provider provider.Provider
 	// SlackConfig is passed straight to internal/orchestrate; a zero
@@ -54,6 +59,19 @@ func (h *Handler) idempotency() IdempotencyStore {
 	}
 	h.Idempotency = NewInMemoryIdempotencyStore()
 	return h.Idempotency
+}
+
+// client builds a *ghclient.Client scoped to one repository, so a single
+// deployment can serve webhook deliveries from multiple repositories --
+// each event resolves its own client from the payload's own owner/repo
+// rather than this Handler being bound to one repository for its whole
+// lifetime.
+func (h *Handler) client(owner, repo string) *ghclient.Client {
+	c := ghclient.New(h.Token, owner, repo)
+	if h.BaseURL != "" {
+		c.BaseURL = h.BaseURL
+	}
+	return c
 }
 
 // ServeHTTP implements the POST /webhooks/github endpoint: read the body

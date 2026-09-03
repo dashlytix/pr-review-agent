@@ -30,7 +30,10 @@ import (
 // (and everything below that consumes it) correct rather than
 // coincidental.
 type PullRequestEvent struct {
-	Action      string `json:"action"`
+	Action     string `json:"action"`
+	Repository struct {
+		FullName string `json:"full_name"`
+	} `json:"repository"`
 	PullRequest struct {
 		Number  int    `json:"number"`
 		Title   string `json:"title"`

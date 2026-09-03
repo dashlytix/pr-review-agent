@@ -9,13 +9,21 @@
 // other entrypoint in this repo -- see internal/githubauth for the
 // GitHub-App-backed alternative this is deliberately structured to swap
 // in later without any change to internal/gather, internal/post, or
-// internal/orchestrate.
+// internal/orchestrate. One token is shared across every repository this
+// server receives webhooks for (see internal/webhook.Handler.client) --
+// it must have access to all of them, since there is no per-repo
+// installation token yet.
 //
 // Usage:
 //
-//	GITHUB_WEBHOOK_SECRET=whsec_... GITHUB_TOKEN=ghp_... GITHUB_REPOSITORY=owner/repo \
+//	GITHUB_WEBHOOK_SECRET=whsec_... GITHUB_TOKEN=ghp_... \
 //	LLM_PROVIDER=claude LLM_API_KEY=sk-... \
 //	go run ./cmd/webhookserver
+//
+// Register the same webhook URL (with the same GITHUB_WEBHOOK_SECRET) on
+// as many repositories as should be served by this one process -- the
+// target repository is read from each delivery's own payload, not a
+// fixed GITHUB_REPOSITORY value.
 package main
 
 import (
@@ -26,10 +34,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
-	"github.com/dimension/ai-ci-agent/internal/ghclient"
 	"github.com/dimension/ai-ci-agent/internal/notify"
 	"github.com/dimension/ai-ci-agent/internal/provider"
 	"github.com/dimension/ai-ci-agent/internal/webhook"
@@ -48,27 +54,17 @@ func run() error {
 	}
 
 	githubToken := os.Getenv("GITHUB_TOKEN")
-	repoFull := os.Getenv("GITHUB_REPOSITORY")
 	providerName := envOr("LLM_PROVIDER", "claude")
 	apiKey := os.Getenv("LLM_API_KEY")
 
 	for name, v := range map[string]string{
-		"GITHUB_TOKEN":      githubToken,
-		"GITHUB_REPOSITORY": repoFull,
-		"LLM_API_KEY":       apiKey,
+		"GITHUB_TOKEN": githubToken,
+		"LLM_API_KEY":  apiKey,
 	} {
 		if v == "" {
 			return fmt.Errorf("missing required environment variable %s", name)
 		}
 	}
-
-	owner, repo, ok := strings.Cut(repoFull, "/")
-	if !ok {
-		return fmt.Errorf("GITHUB_REPOSITORY %q is not in owner/repo form", repoFull)
-	}
-	// A plain PAT for now -- see internal/githubauth and this file's own
-	// doc comment for the GitHub App path this is meant to grow into.
-	client := ghclient.New(githubToken, owner, repo)
 
 	llmProvider, err := provider.Get(providerName, apiKey)
 	if err != nil {
@@ -82,8 +78,7 @@ func run() error {
 
 	handler := &webhook.Handler{
 		Secret:      webhookCfg.WebhookSecret,
-		Client:      client,
-		Repo:        repoFull,
+		Token:       githubToken,
 		Provider:    llmProvider,
 		SlackConfig: slackCfg,
 	}

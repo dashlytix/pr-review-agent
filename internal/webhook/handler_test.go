@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dimension/ai-ci-agent/internal/ghclient"
 	"github.com/dimension/ai-ci-agent/internal/provider"
 )
 
@@ -38,22 +37,19 @@ func testHandler(t *testing.T, mux http.Handler, fp provider.Provider) (*Handler
 	ghServer := httptest.NewServer(mux)
 	t.Cleanup(ghServer.Close)
 
-	client := ghclient.New("test-token", "acme", "widgets")
-	client.BaseURL = ghServer.URL
-	client.RetryBaseDelay = 5 * time.Millisecond
-
 	return &Handler{
 		Secret:      testSecret,
 		Idempotency: NewInMemoryIdempotencyStore(),
-		Client:      client,
-		Repo:        "acme/widgets",
+		Token:       "test-token",
+		BaseURL:     ghServer.URL,
 		Provider:    fp,
 	}, ghServer
 }
 
 func pullRequestOpenedPayload(number int) []byte {
 	b, _ := json.Marshal(map[string]any{
-		"action": "opened",
+		"action":     "opened",
+		"repository": map[string]string{"full_name": "acme/widgets"},
 		"pull_request": map[string]any{
 			"number": number,
 			"title":  "test PR",
@@ -207,6 +203,67 @@ func TestServeHTTP_UnsupportedEventAcknowledgedWithoutReview(t *testing.T) {
 	}
 }
 
+// TestServeHTTP_RoutesToRepositoryNamedInPayload proves the Handler
+// resolves its GitHub client per-delivery from the payload's own
+// repository.full_name, not a fixed value -- the whole point of this
+// Handler serving webhooks registered on any number of repositories
+// rather than being bound to one at construction. A stub server that
+// only understands a repository other than testHandler's default
+// ("acme/widgets") would 404 (and never signal posted) if the client
+// were still hardcoded to that default.
+func TestServeHTTP_RoutesToRepositoryNamedInPayload(t *testing.T) {
+	posted := make(chan struct{}, 1)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/other-org/other-repo/pulls/", func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/files"):
+			json.NewEncoder(w).Encode([]map[string]string{})
+		case strings.HasSuffix(r.URL.Path, "/reviews") && r.Method == http.MethodGet:
+			json.NewEncoder(w).Encode([]map[string]any{})
+		case strings.HasSuffix(r.URL.Path, "/reviews") && r.Method == http.MethodPost:
+			json.NewEncoder(w).Encode(map[string]any{"id": 1, "html_url": "https://x/1"})
+			select {
+			case posted <- struct{}{}:
+			default:
+			}
+		case r.Header.Get("Accept") == "application/vnd.github.v3.diff":
+			w.Write([]byte("diff --git a/a.go b/a.go\n"))
+		default:
+			json.NewEncoder(w).Encode(map[string]any{"mergeable": true, "mergeable_state": "clean"})
+		}
+	})
+	mux.HandleFunc("/repos/other-org/other-repo/issues/", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	})
+
+	fp := &fakeProvider{}
+	h, _ := testHandler(t, mux, fp)
+
+	body, _ := json.Marshal(map[string]any{
+		"action":     "opened",
+		"repository": map[string]string{"full_name": "other-org/other-repo"},
+		"pull_request": map[string]any{
+			"number": 9,
+			"title":  "cross-repo test PR",
+			"head":   map[string]string{"sha": "cafef00d"},
+			"base":   map[string]string{"ref": "main"},
+			"user":   map[string]string{"login": "octocat"},
+		},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/github", strings.NewReader(string(body)))
+	req.Header.Set("X-Hub-Signature-256", SignPayload(testSecret, body))
+	req.Header.Set("X-GitHub-Delivery", "delivery-other-repo")
+	req.Header.Set("X-GitHub-Event", "pull_request")
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
+	}
+	waitForSignal(t, posted)
+}
+
 func TestServeHTTP_UnsupportedPullRequestActionAcknowledgedWithoutReview(t *testing.T) {
 	mux, posted := stubGitHubForReview(t, 7)
 	fp := &fakeProvider{}
@@ -214,6 +271,7 @@ func TestServeHTTP_UnsupportedPullRequestActionAcknowledgedWithoutReview(t *test
 
 	body, _ := json.Marshal(map[string]any{
 		"action":       "labeled",
+		"repository":   map[string]string{"full_name": "acme/widgets"},
 		"pull_request": map[string]any{"number": 7, "head": map[string]string{"sha": "deadbeef"}},
 	})
 	req := httptest.NewRequest(http.MethodPost, "/webhooks/github", strings.NewReader(string(body)))
