@@ -108,6 +108,13 @@ func (a *AppAuthenticator) ListInstallationRepositories(ctx context.Context, ins
 // carrying the API's own message -- the same shape InstallationToken
 // already implements inline, factored out here so the two list methods
 // above don't duplicate it. InstallationToken itself is left untouched.
+//
+// Known limitation, deliberately deferred: unlike internal/ghclient.Client,
+// this does not retry on rate limiting (403/429) -- a rate-limited call
+// surfaces as a plain error rather than retrying with backoff. Accepted
+// for now since App-authenticated calls get a generous 5,000 req/hour
+// limit and this is a low-traffic internal admin tool; worth adding
+// ghclient-style retry here if that ever stops being true.
 func (a *AppAuthenticator) doAppRequest(ctx context.Context, url, bearerToken string, out interface{}) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
