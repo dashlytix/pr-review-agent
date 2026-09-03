@@ -8,7 +8,7 @@ import (
 )
 
 func TestServer_StartAndShutdown(t *testing.T) {
-	h := &Handler{Secret: testSecret, Client: nil, Provider: nil}
+	h := &Handler{Secret: testSecret, Provider: nil}
 	s := NewServer("127.0.0.1:0", h)
 
 	errCh := make(chan error, 1)

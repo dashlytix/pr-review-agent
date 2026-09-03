@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/dimension/ai-ci-agent/internal/orchestrate"
 )
@@ -39,11 +40,22 @@ func handlePullRequestWebhook(ctx context.Context, h *Handler, payload []byte) e
 		return fmt.Errorf("webhook: decode pull_request payload: %w", err)
 	}
 
-	if err := orchestrate.HandlePullRequestEvent(ctx, h.Client, &event, h.Repo, h.SlackConfig); err != nil {
+	// The repository comes from each delivery's own payload, not a
+	// Handler-wide fixed value -- this is what lets one deployment serve
+	// webhooks registered on any number of repositories, per repository
+	// full_name.
+	repo := event.Repository.FullName
+	owner, name, ok := strings.Cut(repo, "/")
+	if !ok {
+		return fmt.Errorf("webhook: pull_request payload carried no usable repository.full_name (got %q)", repo)
+	}
+	client := h.client(owner, name)
+
+	if err := orchestrate.HandlePullRequestEvent(ctx, client, &event, repo, h.SlackConfig); err != nil {
 		// Best-effort, matching cmd/agent's own treatment of this call
 		// for actions the webhook path doesn't itself gate on below --
 		// a Slack notification failure must not block the review.
-		log.Printf("webhook: pull_request %d: notify failed: %v", event.PullRequest.Number, err)
+		log.Printf("webhook: %s pull_request %d: notify failed: %v", repo, event.PullRequest.Number, err)
 	}
 
 	// Initially support opened/reopened/synchronize (§Phase 4). Unlike
@@ -51,13 +63,13 @@ func handlePullRequestWebhook(ctx context.Context, h *Handler, payload []byte) e
 	// see orchestrate.ShouldReview's doc comment for why the two gates
 	// deliberately differ.
 	if !orchestrate.ShouldReview(event.Action) {
-		log.Printf("webhook: pull_request %d action %q: no review triggered", event.PullRequest.Number, event.Action)
+		log.Printf("webhook: %s pull_request %d action %q: no review triggered", repo, event.PullRequest.Number, event.Action)
 		return nil
 	}
 
 	pr := event.PullRequest
-	if err := orchestrate.ReviewPR(ctx, h.Client, h.Provider, pr.Number, pr.Head.SHA, h.SlackConfig); err != nil {
-		return fmt.Errorf("webhook: review pr %d: %w", pr.Number, err)
+	if err := orchestrate.ReviewPR(ctx, client, h.Provider, pr.Number, pr.Head.SHA, h.SlackConfig); err != nil {
+		return fmt.Errorf("webhook: %s review pr %d: %w", repo, pr.Number, err)
 	}
 	return nil
 }

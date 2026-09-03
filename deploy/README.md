@@ -89,12 +89,20 @@ Action step -- it listens for `POST /webhooks/github` deliveries and, for a
 pipeline (`internal/orchestrate`) the Actions-triggered path uses. See
 `internal/webhook`'s package doc comment for the request-handling details.
 
+**One deployment serves any number of repositories**, not just one: each
+delivery's own `repository.full_name` in the payload determines which repo a
+`*ghclient.Client` is built for (see `internal/webhook.Handler.client`) --
+there is no per-repo configuration here. Register the same webhook URL and
+`GITHUB_WEBHOOK_SECRET` on every repository that should get reviews/Slack
+notifications from this instance.
+
 **This binary authenticates with a plain PAT (`GITHUB_TOKEN`) today, the same
-as every other entrypoint in this repo.** `internal/githubauth` has a
-complete, tested GitHub App JWT + installation-token implementation ready to
-swap in once an App exists (see that package's doc comment) -- nothing in
-`cmd/webhookserver` needs to change beyond how its `ghclient.Client` is
-constructed.
+as every other entrypoint in this repo -- one token shared across every
+repository it serves, so it must have read/write access to all of them.**
+`internal/githubauth` has a complete, tested GitHub App JWT +
+installation-token implementation ready to swap in once an App exists (see
+that package's doc comment), which would resolve a distinct token per
+installation instead of sharing one PAT.
 
 ## 1. Build the binary
 
@@ -107,10 +115,9 @@ go build -o /usr/local/bin/ai-ci-agent-webhookserver ./cmd/webhookserver
 Create `/etc/ai-ci-agent/webhookserver.env` (root-readable only):
 
 ```
-GITHUB_WEBHOOK_SECRET=whsec_...        # shared secret configured on the webhook source
+GITHUB_WEBHOOK_SECRET=whsec_...        # shared secret configured on every repo's webhook
 WEBHOOK_LISTEN_ADDR=:8080              # optional, defaults to :8080
-GITHUB_TOKEN=ghp_...
-GITHUB_REPOSITORY=owner/repo
+GITHUB_TOKEN=ghp_...                   # needs access to every repo this instance serves
 LLM_PROVIDER=claude                    # or openai
 LLM_API_KEY=sk-...
 SLACK_BOT_TOKEN=xoxb-...               # optional -- omit both to disable Slack notifications

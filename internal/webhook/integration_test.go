@@ -8,8 +8,6 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
-
-	"github.com/dimension/ai-ci-agent/internal/ghclient"
 )
 
 // TestIntegration_WebhookRequestReachesExistingReviewPipeline exercises
@@ -25,15 +23,11 @@ func TestIntegration_WebhookRequestReachesExistingReviewPipeline(t *testing.T) {
 	ghServer := httptest.NewServer(mux)
 	t.Cleanup(ghServer.Close)
 
-	client := ghclient.New("test-token", "acme", "widgets")
-	client.BaseURL = ghServer.URL
-	client.RetryBaseDelay = 5 * time.Millisecond
-
 	handler := &Handler{
 		Secret:      testSecret,
 		Idempotency: NewInMemoryIdempotencyStore(),
-		Client:      client,
-		Repo:        "acme/widgets",
+		Token:       "test-token",
+		BaseURL:     ghServer.URL,
 		Provider:    fp,
 	}
 
