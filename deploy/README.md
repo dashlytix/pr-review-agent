@@ -159,3 +159,88 @@ setup -- additionally requires an org admin to:
 None of this blocks development or testing today -- see `internal/githubauth`'s
 tests, which exercise the full App-JWT/installation-token flow against a
 locally generated key and a stub server, with no real App required.
+
+# Deploying the admin dashboard (`cmd/dashboard`)
+
+Also an always-on process, like `cmd/slackbot`/`cmd/webhookserver`. It gives a
+`dashlytix` org admin a safe front door for installing the org's GitHub App on
+whichever repos they choose -- GitHub's own native install flow does the
+actual repo picking -- and shows which installations/repos currently exist,
+read live from GitHub on every page load. No local database: access is gated
+by a "Sign in with GitHub" OAuth flow that re-checks live org-admin membership
+on **every** request, not just at login, so a demoted admin loses access on
+their very next click. See `internal/dashboard`'s package doc comment for the
+full design rationale.
+
+**This requires a real, organization-owned GitHub App to already exist** --
+see "What still requires an organization administrator" above for creating
+one. Two credential pairs come off that same App's settings page, and they
+are not interchangeable:
+
+- The **App ID + private key** (`GITHUB_APP_ID`/`GITHUB_APP_PRIVATE_KEY`) --
+  the same pair `cmd/webhookserver` is meant to eventually use, authenticates
+  as the App itself for `ListInstallations`/`ListInstallationRepositories`.
+- The App's built-in **OAuth client ID + secret**
+  (`GITHUB_OAUTH_CLIENT_ID`/`GITHUB_OAUTH_CLIENT_SECRET`, found further down
+  the same settings page under "Sign in with GitHub App") -- authenticates the
+  *visiting admin*, never the App.
+
+## 1. Build the binary
+
+```
+go build -o /usr/local/bin/ai-ci-agent-dashboard ./cmd/dashboard
+```
+
+## 2. Configure credentials
+
+Create `/etc/ai-ci-agent/dashboard.env` (root-readable only):
+
+```
+GITHUB_APP_ID=123456
+GITHUB_APP_PRIVATE_KEY=...             # base64 of the .pem file: base64 -w0 app.pem
+GITHUB_APP_SLUG=dashlytix-pr-review-agent
+GITHUB_OAUTH_CLIENT_ID=Iv1....
+GITHUB_OAUTH_CLIENT_SECRET=...
+DASHBOARD_ORG=dashlytix
+DASHBOARD_SESSION_KEY=...              # base64 of 32 random bytes: openssl rand -base64 32
+DASHBOARD_BASE_URL=https://dashboard.internal.example.com   # no trailing slash
+DASHBOARD_LISTEN_ADDR=:8081            # optional, defaults to :8081
+```
+
+`DASHBOARD_BASE_URL` must be reachable from an admin's browser and must exactly
+match the callback URL registered on the App (`<DASHBOARD_BASE_URL>/auth/callback`)
+under "Identifying and authorizing users" in the App's settings -- a mismatch
+here is the most common reason the OAuth flow fails at the callback step.
+`DASHBOARD_SESSION_KEY` must decode to exactly 32 bytes (AES-256); anything
+else fails fast at startup rather than silently sealing broken cookies.
+
+## 3. Install and start the systemd service
+
+```
+sudo useradd --system --no-create-home ai-ci-agent   # if it doesn't already exist
+sudo cp deploy/dashboard.service /etc/systemd/system/
+sudo chown ai-ci-agent:ai-ci-agent /usr/local/bin/ai-ci-agent-dashboard
+sudo chmod 600 /etc/ai-ci-agent/dashboard.env
+sudo systemctl daemon-reload
+sudo systemctl enable --now dashboard.service
+```
+
+## 4. Verify
+
+```
+sudo systemctl status dashboard.service
+sudo journalctl -u dashboard.service -f
+```
+
+Then, in a browser, visit `DASHBOARD_BASE_URL`, sign in with a GitHub account
+that is an active admin of `DASHBOARD_ORG`, and confirm the installations
+table matches what the App's own "Install App" settings page shows. Also
+worth checking the negative case: sign in with an account that is a member
+but not an admin (or not a member at all) of the org, and confirm the
+dashboard rejects it rather than showing anything.
+
+This repo has no reverse proxy/TLS/DNS configuration of its own -- put this
+service behind whatever the org already uses for internal HTTPS termination
+(same caveat as `cmd/webhookserver`'s public URL above), since OAuth callback
+URLs must be HTTPS in practice and the session cookie's `Secure` attribute is
+derived from `DASHBOARD_BASE_URL` starting with `https://`.

@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>pr-review-agent admin</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 32rem; margin: 4rem auto; padding: 0 1rem; color: #1b222c; }
+  .error { background: #fdecea; border: 1px solid #f5c2c0; color: #7a1f1a; padding: 0.75rem 1rem; border-radius: 6px; margin-bottom: 1.5rem; }
+  a.button { display: inline-block; background: #1b222c; color: #fff; text-decoration: none; padding: 0.6rem 1.2rem; border-radius: 6px; font-weight: 600; }
+</style>
+</head>
+<body>
+  <h1>pr-review-agent admin</h1>
+  {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+  <p>Sign in with a GitHub account that is an active admin of the <strong>{{.Org}}</strong> organization.</p>
+  <p><a class="button" href="/login">Sign in with GitHub</a></p>
+</body>
+</html>
